@@ -1,39 +1,55 @@
-// === CONFIGURATION ===
 export const CONFIG = {
-    STARTING_MONEY: 200000,
-    GRID_W: 40, GRID_H: 50, CELL_SIZE: 24, // Made cells slightly smaller to fit wider grid
+    STARTING_MONEY: 2000000,
+    GRID_W: 40, 
+    GRID_H: 50, 
+    CELL_SIZE: 24, 
     LOBBY_FLOOR: 25, 
-    
-    // REVENUE
-    OFFICE_RENT: 400,
-    HOTEL_RENT: 250,
-    FOOD_INCOME_PER: 30,
-    CONDO_SALE: 30000,
-    PARKING_INCOME: 100,
-    
-    MAX_WAIT: 600
+    OFFICE_RENT: 300,
+    HOTEL_RENT: 500,
+    CONDO_RENT: 0,
+    CONDO_SALE: 150000,
+    FOOD_INCOME_PER: 25,
+    PARKING_INCOME: 50,
+    CINEMA_INCOME_PER: 40,
+    MAX_WAIT: 1200 
 };
 
 export const TYPES = {
     EMPTY: 0, LOBBY: 1, OFFICE: 2, CONDO: 3, HOTEL: 4,
     FOOD: 5, PARKING: 6, STAIRS: 7, ELEVATOR: 8,
-    TAKEN: 99 // Placeholder for the extra tiles of a wide room
+    CLEANING_SERVICE: 9, 
+    CINEMA: 11,      
+    CATHEDRAL: 12,   
+    TAKEN: 99,
+    ELEVATOR_EXPRESS: 10,
+    SECURITY: 13,
+    METRO: 14,
+    // [ADDED] Missing types referenced in GridManager/SystemsManager
+    SKY_LOBBY: 15,
+    MEDICAL: 16,
+    RECYCLING: 17,
+    HOTEL_SUITE: 18
 };
 
-// Define Size and Cost here
 export const ROOM_PROPS = {
-    [TYPES.OFFICE]:   { w: 2, cost: 8000 },
-    [TYPES.CONDO]:    { w: 4, cost: 15000 },
-    [TYPES.HOTEL]:    { w: 2, cost: 12000 },
-    [TYPES.FOOD]:     { w: 3, cost: 10000 },
-    [TYPES.PARKING]:  { w: 1, cost: 5000 },
-    [TYPES.STAIRS]:   { w: 1, cost: 1000 },
-    [TYPES.ELEVATOR]: { w: 1, cost: 5000 },
+    [TYPES.OFFICE]:   { w: 2, cost: 40000 },
+    [TYPES.CONDO]:    { w: 4, cost: 80000 },
+    [TYPES.HOTEL]:    { w: 2, cost: 20000 },
+    [TYPES.FOOD]:     { w: 3, cost: 100000 },
+    [TYPES.PARKING]:  { w: 1, cost: 2000 },
+    [TYPES.STAIRS]:   { w: 1, cost: 500 },
+    [TYPES.ELEVATOR]: { w: 1, cost: 3000 },
+    [TYPES.ELEVATOR_EXPRESS]: { w: 1, cost: 10000 },
+    [TYPES.CLEANING_SERVICE]: { w: 2, cost: 5000 }, 
+    [TYPES.CINEMA]:   { w: 6, cost: 15000 },
+    [TYPES.CATHEDRAL]:{ w: 4, cost: 50000 },
+    [TYPES.SECURITY]: { w: 2, cost: 10000 },
+    [TYPES.METRO]:    { w: 4, cost: 500000 },
     [TYPES.LOBBY]:    { w: 1, cost: 0 },
+    [TYPES.SKY_LOBBY]:{ w: 2, cost: 10000 }, // Added
     [TYPES.EMPTY]:    { w: 1, cost: 0 }
 };
 
-// === AUDIO SYSTEM ===
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 export function beep(freq = 600, dur = 50, type = 'square') {
     if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -43,16 +59,16 @@ export function beep(freq = 600, dur = 50, type = 'square') {
     g.connect(audioCtx.destination);
     o.frequency.value = freq;
     o.type = type;
+    g.gain.value = 0.5;
     o.start();
-    g.gain.setValueAtTime(0.05, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur/1000);
-    o.stop(audioCtx.currentTime + dur/1000);
+    g.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + dur / 1000);
+    o.stop(audioCtx.currentTime + dur / 1000);
 }
 
 export class TowerEngine {
     constructor() {
         this.money = CONFIG.STARTING_MONEY;
-        this.time = 8 * 60; 
+        this.time = 6 * 60; // Start at 06:00
         this.day = 1;
         this.speed = 1;
         this.rating = 1;
@@ -62,7 +78,7 @@ export class TowerEngine {
     update(dt) {
         if (this.paused) return false;
         const scaled = dt * this.speed;
-        this.time += 0.5 * (scaled / 16);
+        this.time += 0.5 * (scaled / 16); 
 
         if (this.time >= 24 * 60) {
             this.time -= 24 * 60;
@@ -84,15 +100,32 @@ export class TowerEngine {
     }
 
     setSpeed() {
-        this.speed = this.speed % 4 + 1;
+        this.speed = this.speed >= 10 ? 1 : (this.speed === 1 ? 4 : 10);
         return this.speed;
     }
 
-    updateRating(pop) {
-        if (pop > 500) this.rating = 5;
-        else if (pop > 300) this.rating = 4;
-        else if (pop > 150) this.rating = 3;
-        else if (pop > 50) this.rating = 2;
-        else this.rating = 1;
+    togglePause() {
+        this.paused = !this.paused;
+        return this.paused;
+    }
+
+    updateRating(stats) {
+        let newRating = 1;
+        if (stats.pop > 300 && stats.hasElevator) {
+            newRating = 2;
+            if (stats.pop > 1000 && stats.hasSecurity && stats.hasFood) {
+                newRating = 3;
+                if (stats.pop > 5000 && stats.vipGood) {
+                    newRating = 4;
+                    if (stats.pop > 10000 && stats.hasMetro) {
+                        newRating = 5;
+                        if (stats.pop > 15000 && stats.hasCathedral) {
+                            newRating = 6; 
+                        }
+                    }
+                }
+            }
+        }
+        this.rating = newRating;
     }
 }
