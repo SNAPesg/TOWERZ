@@ -1,227 +1,214 @@
 import { CONFIG, TYPES } from './Engine.js';
 
 class Person {
-    constructor(targetX, targetY, isVisitor = false) {
-        this.x = 0; 
-        this.y = CONFIG.LOBBY_FLOOR;
-        this.targetX = targetX;
-        this.targetY = targetY; 
-        this.realTargetY = targetY; 
-        this.isVisitor = isVisitor;
-        this.state = 'walking_to_transport'; 
-        this.waitTimer = 0;
-        this.elevator = null;
-        this.targetElevatorX = 0;
+    constructor(startX, startY, type) {
+        this.x = startX; 
+        this.y = startY;
+        this.type = type; 
         
-        this.shirtColor = isVisitor ? '#f44336' : '#2196F3'; // Red for hotel guests, Blue for office workers
-        this.skinColor = '#ffccaa';
-        this.heightVar = Math.random() * 2;
-    }
-
-    findTransport(grid) {
-        for (let tx = 0; tx < CONFIG.GRID_W; tx++) {
-            if (grid[Math.floor(this.y)][tx].type === TYPES.ELEVATOR &&
-                grid[Math.floor(this.targetY)][tx].type === TYPES.ELEVATOR) {
-                this.targetElevatorX = tx;
-                return 'elevator';
-            }
-        }
-        for (let tx = 0; tx < CONFIG.GRID_W; tx++) {
-            if (grid[Math.floor(this.y)][tx].type === TYPES.STAIRS &&
-                grid[Math.floor(this.targetY)][tx].type === TYPES.STAIRS) {
-                this.targetElevatorX = tx;
-                return 'stairs';
-            }
-        }
-        if (Math.floor(this.targetY) !== CONFIG.LOBBY_FLOOR) {
-            for (let tx = 0; tx < CONFIG.GRID_W; tx++) {
-                if (grid[Math.floor(this.y)][tx].type === TYPES.ELEVATOR &&
-                    grid[CONFIG.LOBBY_FLOOR][tx].type === TYPES.ELEVATOR) {
-                    this.targetElevatorX = tx;
-                    this.targetY = CONFIG.LOBBY_FLOOR;
-                    return 'elevator';
-                }
-            }
-        }
-        return null;
-    }
-
-    enterElevator(elevator) {
-        this.state = 'riding';
-        this.elevator = elevator;
-    }
-
-    exitElevator(x, y) {
-        this.state = 'exiting';
-        this.x = x;
-        this.y = y;
+        // Final Destination (e.g., The Office)
+        this.destinationX = startX;
+        this.destinationY = startY;
+        
+        // Immediate Waypoint (e.g., The Elevator)
+        this.targetX = startX;
+        this.targetY = startY; 
+        
+        this.color = this.getColorByType(type);
+        this.state = 'idle'; // idle, walking, waiting, riding, exiting
+        this.patience = CONFIG.MAX_WAIT || 1200; 
+        this.visible = true;
         this.elevator = null;
+        this.stress = 0;
     }
 
-    update(dt, grid, elevators) {
-        const speed = this.state === 'using_stairs' ? 0.03 : 0.12;
+    getColorByType(type) {
+        const colors = {
+            'HOTEL': '#E91E63',
+            'OFFICE': '#2196F3',
+            'CONDO': '#FF9800',
+            'VISITOR': '#4CAF50',
+            'JANITOR': '#00BCD4'
+        };
+        return colors[type] || '#9E9E9E';
+    }
 
-        if (this.state === 'walking_to_transport') {
-            const transport = this.findTransport(grid);
-            if (!transport) { this.state = 'leaving'; return false; }
+    // Call this to set the final goal
+    setGoal(x, y) {
+        this.destinationX = x;
+        this.destinationY = y;
+        this.decideNextMove();
+    }
+
+    decideNextMove() {
+        // 1. Are we on the correct floor?
+        if (Math.abs(this.y - this.destinationY) > 0.1) {
+            // No: We need to find an elevator
+            this.state = 'needs_elevator';
+        } else {
+            // Yes: Walk to final destination X
+            this.targetX = this.destinationX;
+            this.targetY = this.destinationY; // Should match current Y
             
-            if (Math.abs(this.x - this.targetElevatorX) < 0.2) {
-                this.x = this.targetElevatorX;
-                this.state = transport === 'elevator' ? 'waiting' : 'using_stairs';
-                if (this.state === 'waiting') {
-                    const elev = elevators.find(e => e.x === this.targetElevatorX);
-                    if (elev) elev.addRequest(Math.floor(this.y), this.targetY < this.y);
+            if (Math.abs(this.x - this.destinationX) < 0.1) {
+                // We are there!
+                if (this.destinationX === 0 && this.destinationY === CONFIG.LOBBY_FLOOR) {
+                     this.state = 'despawn'; // We left the building
+                } else {
+                     this.state = 'idle';
                 }
             } else {
-                this.x += Math.sign(this.targetElevatorX - this.x) * 0.1;
+                this.state = 'walking';
             }
         }
-        else if (this.state === 'waiting') {
-            this.waitTimer++;
-            if (this.waitTimer > CONFIG.MAX_WAIT) this.state = 'leaving';
+    }
+
+    update(dt, speed, grid, elevators) {
+        // STATE: NEEDS ELEVATOR
+        // We are on the wrong floor, looking for a path
+        if (this.state === 'needs_elevator') {
+            let bestElev = null;
+            let minDist = Infinity;
+
+            elevators.forEach(e => {
+                // Simplified: Assume all elevators go everywhere for now
+                const dist = Math.abs(e.x - this.x);
+                if (dist < minDist) {
+                    minDist = dist;
+                    bestElev = e;
+                }
+            });
+
+            if (bestElev) {
+                this.targetX = bestElev.x;
+                this.state = 'walking_to_elev';
+            } else {
+                // No elevator found (trapped)
+                this.stress += 0.1 * speed;
+            }
         }
+
+        // STATE: WALKING (General or To Elevator)
+        if (this.state === 'walking' || this.state === 'walking_to_elev') {
+            const dx = this.targetX - this.x;
+            if (Math.abs(dx) > 0.1) {
+                const moveSpeed = 0.1 * speed; // Walking speed
+                this.x += Math.sign(dx) * moveSpeed;
+            } else {
+                // Arrived at targetX
+                this.x = this.targetX; // Snap
+                
+                if (this.state === 'walking_to_elev') {
+                    this.state = 'waiting_for_elev';
+                    // We need to request the elevator here
+                    // Ideally found elevator instance, but for now we wait for system to pick us up
+                } else {
+                    this.decideNextMove(); // Re-evaluate (did we reach office? or just a waypoint?)
+                }
+            }
+        }
+
+        // STATE: WAITING
+        else if (this.state === 'waiting_for_elev') {
+            this.patience -= 1 * speed;
+            if (this.patience < 0) this.stress += 0.05 * speed;
+            
+            // Logic to request elevator is handled in SimulationManager update loop or System
+        }
+
+        // STATE: RIDING
         else if (this.state === 'riding') {
             if (this.elevator) {
                 this.x = this.elevator.x;
                 this.y = this.elevator.y;
             }
         }
-        else if (this.state === 'using_stairs') {
-            if (Math.abs(this.y - this.targetY) < 0.1) {
-                this.y = this.targetY;
-                this.state = 'exiting';
-            } else {
-                this.y += Math.sign(this.targetY - this.y) * speed * (dt/16);
-            }
-        }
-        else if (this.state === 'exiting') {
-            if (Math.abs(this.x - this.targetX) < 0.2) {
-                if (Math.floor(this.y) === CONFIG.LOBBY_FLOOR && this.targetX === 0) {
-                    return true; 
-                }
-                if (Math.floor(this.y) === CONFIG.LOBBY_FLOOR && Math.floor(this.realTargetY) !== CONFIG.LOBBY_FLOOR) {
-                    this.targetY = this.realTargetY;
-                    this.state = 'walking_to_transport';
-                } else {
-                    this.state = 'arrived';
-                    const cell = grid[Math.floor(this.y)][Math.floor(this.targetX)];
-                    if (cell && cell.occupants) cell.occupants.push(this);
-                }
-            } else {
-                this.x += Math.sign(this.targetX - this.x) * 0.1;
-            }
-        }
-        else if (this.state === 'leaving') {
-            this.y += 0.2;
-            if (this.y > CONFIG.GRID_H) return true;
-        }
 
-        return false;
+        // Return true if person should be removed (left building)
+        return this.state === 'despawn';
     }
 }
 
 export class SimulationManager {
     constructor() {
         this.people = [];
-        this.spawnFlags = { daily: false, hotel: false };
     }
 
-    spawn(type, grid) {
-        let spawned = 0;
-        for (let y = 0; y < CONFIG.GRID_H; y++) {
-            for (let x = 0; x < CONFIG.GRID_W; x++) {
-                const cell = grid[y][x];
-                // Spawn only on anchors to prevent duplicate spawns
-                if (!cell.isAnchor || !cell.connected) continue;
-
-                let shouldSpawn = false;
-                if (type === 'OFFICE' && cell.type === TYPES.OFFICE && cell.occupants.length < 4) shouldSpawn = true;
-                if (type === 'HOTEL' && cell.type === TYPES.HOTEL && cell.occupants.length < 3) shouldSpawn = true;
-
-                if (shouldSpawn) {
-                    this.people.push(new Person(x, y, cell.type === TYPES.HOTEL));
-                    spawned++;
+    spawn(count, type, grid) {
+        for(let i=0; i<count; i++) {
+            // Spawn at lobby entrance (x=0)
+            const p = new Person(0, CONFIG.LOBBY_FLOOR, type);
+            
+            // Find Destination
+            let dest = null;
+            if (type === 'OFFICE') {
+                const offices = [];
+                for(let y=0; y<CONFIG.GRID_H; y++) {
+                    for(let x=0; x<CONFIG.GRID_W; x++) {
+                        if(grid[y][x].type === TYPES.OFFICE && grid[y][x].isAnchor) {
+                            offices.push({x: x, y: y});
+                        }
+                    }
                 }
+                if (offices.length > 0) dest = offices[Math.floor(Math.random() * offices.length)];
+            }
+
+            if (dest) {
+                p.setGoal(dest.x, dest.y);
+                this.people.push(p);
             }
         }
-        return spawned;
     }
 
-    despawn(type, grid) {
-         this.people.forEach(p => {
-             if ((type === 'OFFICE' && !p.isVisitor) || (type === 'HOTEL' && p.isVisitor)) {
-                 if (p.state === 'arrived') {
-                     p.realTargetY = CONFIG.LOBBY_FLOOR;
-                     p.targetY = CONFIG.LOBBY_FLOOR;
-                     p.targetX = 0; 
-                     p.state = 'walking_to_transport';
-                     
-                     const cell = grid[Math.floor(p.y)][Math.floor(p.targetX)];
-                     if(cell && cell.occupants) cell.occupants = cell.occupants.filter(o => o !== p);
-                 }
-             }
+    update(dt, speed, grid, elevators, timeOfDay) {
+        // 1. Spawning Logic
+        // Morning Rush (7am - 9am)
+        if (timeOfDay > 7 * 60 && timeOfDay < 10 * 60) {
+            if (Math.random() < 0.02 * speed) this.spawn(1, 'OFFICE', grid);
+        }
+
+        // Evening Exit (5pm - 7pm)
+        if (timeOfDay > 17 * 60 && timeOfDay < 19 * 60) {
+            this.people.forEach(p => {
+                // If in office and idle, go home
+                if (p.type === 'OFFICE' && p.state === 'idle' && Math.abs(p.y - CONFIG.LOBBY_FLOOR) > 1) {
+                    p.setGoal(0, CONFIG.LOBBY_FLOOR);
+                }
+            });
+        }
+
+        // 2. Elevator Request Logic (Bridge between Sim and System)
+        this.people.forEach(p => {
+            if (p.state === 'waiting_for_elev') {
+                // Find elevator at this X and add request
+                const elev = elevators.find(e => Math.abs(e.x - p.x) < 1);
+                if (elev) elev.addRequest(Math.floor(p.y));
+            }
         });
-    }
 
-    update(dt, speed, grid, elevators, time) {
-        if (time >= 8 * 60 && !this.spawnFlags.daily) {
-            this.spawn('OFFICE', grid);
-            this.despawn('HOTEL', grid);
-            this.spawnFlags.daily = true;
-        }
-        if (time >= 17 * 60 && !this.spawnFlags.hotel) {
-            this.spawn('HOTEL', grid);
-            this.despawn('OFFICE', grid);
-            this.spawnFlags.hotel = true;
-        }
-        if (time < 8 * 60) {
-            this.spawnFlags.daily = false;
-            this.spawnFlags.hotel = false;
-        }
-
-        this.people = this.people.filter(p => !p.update(dt * speed, grid, elevators));
+        // 3. Update Agents
+        this.people = this.people.filter(p => !p.update(dt, speed, grid, elevators));
     }
 
     draw(ctx) {
-        const time = Date.now();
+        const cs = CONFIG.CELL_SIZE;
         this.people.forEach(p => {
-            const px = p.x * CONFIG.CELL_SIZE + CONFIG.CELL_SIZE / 2;
-            const py = p.y * CONFIG.CELL_SIZE + CONFIG.CELL_SIZE - 2;
+            if (!p.visible) return;
+            const px = p.x * cs + cs/2;
+            const py = p.y * cs + cs - 2;
 
-            ctx.save();
-            ctx.translate(px, py);
-
-            // Head
-            ctx.fillStyle = p.skinColor;
-            ctx.fillRect(-2, -14, 4, 4);
-
-            // Body
-            ctx.fillStyle = p.shirtColor;
-            ctx.fillRect(-3, -10, 6, 6);
-
-            // Legs
-            ctx.fillStyle = '#424242';
-            let legOffset = Math.sin(time / 100) * 2;
-            if (p.state === 'waiting' || p.state === 'arrived' || p.state === 'riding') {
-                legOffset = 0;
+            ctx.fillStyle = p.color;
+            ctx.fillRect(px - 3, py - 12, 6, 12);
+            
+            // Draw stress
+            if (p.stress > 50) {
+                ctx.fillStyle = 'red';
+                ctx.fillRect(px - 2, py - 16, 4, 2);
             }
-            ctx.fillRect(-2, -4, 2, 4 + legOffset);
-            ctx.fillRect(1, -4, 2, 4 - legOffset);
-
-            ctx.restore();
         });
     }
 
-    getTotalPopulation(grid) {
-        let pop = this.people.length;
-        for (let y = 0; y < CONFIG.GRID_H; y++) {
-            for (let x = 0; x < CONFIG.GRID_W; x++) {
-                const c = grid[y][x];
-                if (c.isAnchor) {
-                    pop += c.occupants.length;
-                }
-            }
-        }
-        return pop;
+    getTotalPopulation() {
+        return this.people.length;
     }
 }
