@@ -1,214 +1,202 @@
-import { CONFIG, TYPES } from './Engine.js';
+import { CONFIG, TYPES, beep } from './Engine.js';
 
-class Person {
-    constructor(startX, startY, type) {
-        this.x = startX; 
-        this.y = startY;
-        this.type = type; 
-        
-        // Final Destination (e.g., The Office)
-        this.destinationX = startX;
-        this.destinationY = startY;
-        
-        // Immediate Waypoint (e.g., The Elevator)
-        this.targetX = startX;
-        this.targetY = startY; 
-        
-        this.color = this.getColorByType(type);
-        this.state = 'idle'; // idle, walking, waiting, riding, exiting
-        this.patience = CONFIG.MAX_WAIT || 1200; 
-        this.visible = true;
-        this.elevator = null;
-        this.stress = 0;
+class ElevatorCar {
+    constructor(x, stopsAt = null) {
+        this.x = x;
+        this.y = CONFIG.LOBBY_FLOOR;
+        this.passengers = [];
+        this.requests = new Set(); 
+        this.direction = 0; // 0: Idle, 1: Up, -1: Down
+        this.doorsOpen = false;
+        this.doorTimer = 0;
+        this.stopsAt = stopsAt; 
     }
 
-    getColorByType(type) {
-        const colors = {
-            'HOTEL': '#E91E63',
-            'OFFICE': '#2196F3',
-            'CONDO': '#FF9800',
-            'VISITOR': '#4CAF50',
-            'JANITOR': '#00BCD4'
-        };
-        return colors[type] || '#9E9E9E';
+    canStopAt(floor) {
+        if (!this.stopsAt) return true; 
+        return this.stopsAt.has(floor);
     }
 
-    // Call this to set the final goal
-    setGoal(x, y) {
-        this.destinationX = x;
-        this.destinationY = y;
-        this.decideNextMove();
+    addRequest(floor) {
+        if (this.canStopAt(floor)) {
+            this.requests.add(floor);
+        }
     }
 
-    decideNextMove() {
-        // 1. Are we on the correct floor?
-        if (Math.abs(this.y - this.destinationY) > 0.1) {
-            // No: We need to find an elevator
-            this.state = 'needs_elevator';
-        } else {
-            // Yes: Walk to final destination X
-            this.targetX = this.destinationX;
-            this.targetY = this.destinationY; // Should match current Y
+    update(peopleList) {
+        // 1. Door Logic
+        if (this.doorsOpen) {
+            this.doorTimer--;
+            this.handlePassengers(peopleList); 
+            if (this.doorTimer <= 0) {
+                this.doorsOpen = false;
+                this.decideDirection(); 
+            }
+            return;
+        }
+
+        // 2. Movement Logic
+        if (this.direction === 0) {
+            this.decideDirection();
+        }
+
+        if (this.direction !== 0) {
+            // Find next target floor
+            const destinations = Array.from(this.requests).sort((a,b) => a-b);
+            let nextStop = -1;
+
+            if (this.direction === 1) { // Going Up
+                nextStop = destinations.find(f => f >= this.y + 0.1);
+            } else { // Going Down
+                // Find highest floor below us
+                const below = destinations.filter(f => f <= this.y - 0.1);
+                if (below.length > 0) nextStop = below[below.length - 1];
+            }
+
+            // No stops in this direction?
+            if (nextStop === -1) {
+                if (destinations.length > 0) this.direction *= -1; // Switch direction
+                else this.direction = 0; // Idle
+                return;
+            }
+
+            // Move
+            const dist = nextStop - this.y;
+            const absDist = Math.abs(dist);
             
-            if (Math.abs(this.x - this.destinationX) < 0.1) {
-                // We are there!
-                if (this.destinationX === 0 && this.destinationY === CONFIG.LOBBY_FLOOR) {
-                     this.state = 'despawn'; // We left the building
-                } else {
-                     this.state = 'idle';
-                }
+            if (absDist < 0.1) {
+                // Arrived
+                this.y = nextStop;
+                this.doorsOpen = true;
+                this.doorTimer = 60;
+                this.requests.delete(nextStop);
+                beep(800, 50, 'sine');
             } else {
-                this.state = 'walking';
+                // Move car
+                let speed = 0.2; 
+                if (this.stopsAt) speed = 0.4; // Express is faster
+                this.y += Math.sign(dist) * Math.min(absDist, speed);
             }
         }
     }
 
-    update(dt, speed, grid, elevators) {
-        // STATE: NEEDS ELEVATOR
-        // We are on the wrong floor, looking for a path
-        if (this.state === 'needs_elevator') {
-            let bestElev = null;
-            let minDist = Infinity;
+    decideDirection() {
+        if (this.requests.size === 0) {
+            this.direction = 0;
+            return;
+        }
+        // Simple logic: Go towards closest request
+        const floors = Array.from(this.requests);
+        let closest = floors[0];
+        let minDist = Math.abs(floors[0] - this.y);
+        
+        floors.forEach(f => {
+            const d = Math.abs(f - this.y);
+            if (d < minDist) {
+                minDist = d;
+                closest = f;
+            }
+        });
+        
+        if (minDist < 0.1) this.direction = 0; // Already there (shouldn't happen often due to door logic)
+        else this.direction = closest > this.y ? 1 : -1;
+    }
 
-            elevators.forEach(e => {
-                // Simplified: Assume all elevators go everywhere for now
-                const dist = Math.abs(e.x - this.x);
-                if (dist < minDist) {
-                    minDist = dist;
-                    bestElev = e;
+    handlePassengers(peopleList) {
+        const currentFloor = Math.round(this.y);
+
+        // 1. UNLOAD
+        // Filter out people who want to get off here
+        for (let i = this.passengers.length - 1; i >= 0; i--) {
+            const p = this.passengers[i];
+            
+            // Check if this is the floor they wanted (Destination Y)
+            if (Math.round(p.destinationY) === currentFloor) {
+                // Kick them out
+                p.elevator = null;
+                p.x = this.x;
+                p.y = this.y;
+                p.visible = true;
+                p.state = 'idle'; 
+                
+                // IMPORTANT: Tell them to figure out where to walk now!
+                p.decideNextMove(); 
+
+                this.passengers.splice(i, 1);
+            }
+        }
+
+        // 2. LOAD
+        if (this.passengers.length < 20) {
+            // Find people standing exactly here waiting
+            const waiting = peopleList.filter(p => 
+                p.state === 'waiting_for_elev' &&
+                Math.abs(p.x - this.x) < 1 &&
+                Math.abs(p.y - this.y) < 1
+            );
+
+            waiting.forEach(p => {
+                if (this.passengers.length < 20) {
+                    // Check if elevator can go to their destination
+                    if (this.canStopAt(Math.round(p.destinationY))) {
+                        p.state = 'riding';
+                        p.visible = false;
+                        p.elevator = this;
+                        this.passengers.push(p);
+                        
+                        // Add their destination to elevator requests
+                        this.addRequest(Math.round(p.destinationY));
+                    }
                 }
             });
-
-            if (bestElev) {
-                this.targetX = bestElev.x;
-                this.state = 'walking_to_elev';
-            } else {
-                // No elevator found (trapped)
-                this.stress += 0.1 * speed;
-            }
         }
-
-        // STATE: WALKING (General or To Elevator)
-        if (this.state === 'walking' || this.state === 'walking_to_elev') {
-            const dx = this.targetX - this.x;
-            if (Math.abs(dx) > 0.1) {
-                const moveSpeed = 0.1 * speed; // Walking speed
-                this.x += Math.sign(dx) * moveSpeed;
-            } else {
-                // Arrived at targetX
-                this.x = this.targetX; // Snap
-                
-                if (this.state === 'walking_to_elev') {
-                    this.state = 'waiting_for_elev';
-                    // We need to request the elevator here
-                    // Ideally found elevator instance, but for now we wait for system to pick us up
-                } else {
-                    this.decideNextMove(); // Re-evaluate (did we reach office? or just a waypoint?)
-                }
-            }
-        }
-
-        // STATE: WAITING
-        else if (this.state === 'waiting_for_elev') {
-            this.patience -= 1 * speed;
-            if (this.patience < 0) this.stress += 0.05 * speed;
-            
-            // Logic to request elevator is handled in SimulationManager update loop or System
-        }
-
-        // STATE: RIDING
-        else if (this.state === 'riding') {
-            if (this.elevator) {
-                this.x = this.elevator.x;
-                this.y = this.elevator.y;
-            }
-        }
-
-        // Return true if person should be removed (left building)
-        return this.state === 'despawn';
     }
 }
 
-export class SimulationManager {
+export class SystemsManager {
     constructor() {
-        this.people = [];
+        this.elevators = [];
     }
 
-    spawn(count, type, grid) {
-        for(let i=0; i<count; i++) {
-            // Spawn at lobby entrance (x=0)
-            const p = new Person(0, CONFIG.LOBBY_FLOOR, type);
-            
-            // Find Destination
-            let dest = null;
-            if (type === 'OFFICE') {
-                const offices = [];
-                for(let y=0; y<CONFIG.GRID_H; y++) {
-                    for(let x=0; x<CONFIG.GRID_W; x++) {
-                        if(grid[y][x].type === TYPES.OFFICE && grid[y][x].isAnchor) {
-                            offices.push({x: x, y: y});
-                        }
-                    }
-                }
-                if (offices.length > 0) dest = offices[Math.floor(Math.random() * offices.length)];
-            }
-
-            if (dest) {
-                p.setGoal(dest.x, dest.y);
-                this.people.push(p);
+    syncElevators(grid) {
+        // Find shafts
+        const shaftX = new Set();
+        for(let y=0; y<CONFIG.GRID_H; y++) {
+            for(let x=0; x<CONFIG.GRID_W; x++) {
+                if(grid[y][x].type === TYPES.ELEVATOR) shaftX.add(x);
             }
         }
-    }
 
-    update(dt, speed, grid, elevators, timeOfDay) {
-        // 1. Spawning Logic
-        // Morning Rush (7am - 9am)
-        if (timeOfDay > 7 * 60 && timeOfDay < 10 * 60) {
-            if (Math.random() < 0.02 * speed) this.spawn(1, 'OFFICE', grid);
-        }
-
-        // Evening Exit (5pm - 7pm)
-        if (timeOfDay > 17 * 60 && timeOfDay < 19 * 60) {
-            this.people.forEach(p => {
-                // If in office and idle, go home
-                if (p.type === 'OFFICE' && p.state === 'idle' && Math.abs(p.y - CONFIG.LOBBY_FLOOR) > 1) {
-                    p.setGoal(0, CONFIG.LOBBY_FLOOR);
-                }
-            });
-        }
-
-        // 2. Elevator Request Logic (Bridge between Sim and System)
-        this.people.forEach(p => {
-            if (p.state === 'waiting_for_elev') {
-                // Find elevator at this X and add request
-                const elev = elevators.find(e => Math.abs(e.x - p.x) < 1);
-                if (elev) elev.addRequest(Math.floor(p.y));
+        // Create/Update elevators
+        shaftX.forEach(x => {
+            if (!this.elevators.find(e => e.x === x)) {
+                this.elevators.push(new ElevatorCar(x));
             }
         });
+        
+        // Remove deleted elevators
+        this.elevators = this.elevators.filter(e => shaftX.has(e.x));
+    }
 
-        // 3. Update Agents
-        this.people = this.people.filter(p => !p.update(dt, speed, grid, elevators));
+    update(peopleList) {
+        this.elevators.forEach(e => e.update(peopleList));
     }
 
     draw(ctx) {
         const cs = CONFIG.CELL_SIZE;
-        this.people.forEach(p => {
-            if (!p.visible) return;
-            const px = p.x * cs + cs/2;
-            const py = p.y * cs + cs - 2;
-
-            ctx.fillStyle = p.color;
-            ctx.fillRect(px - 3, py - 12, 6, 12);
+        this.elevators.forEach(e => {
+            // Shaft is drawn by grid, we draw the car
+            const px = e.x * cs + 2;
+            const py = e.y * cs + 2;
             
-            // Draw stress
-            if (p.stress > 50) {
-                ctx.fillStyle = 'red';
-                ctx.fillRect(px - 2, py - 16, 4, 2);
+            ctx.fillStyle = e.doorsOpen ? '#FFF' : '#B71C1C';
+            ctx.fillRect(px, py, cs-4, cs-4);
+            
+            // Draw passenger count dot
+            if (e.passengers.length > 0) {
+                ctx.fillStyle = '#00E676';
+                ctx.fillRect(px + 4, py + 4, 4, 4);
             }
         });
-    }
-
-    getTotalPopulation() {
-        return this.people.length;
     }
 }
