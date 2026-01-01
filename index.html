@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modular SimTower</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #111; color: #eee; overflow: hidden; }
+        #gameContainer { display: flex; height: 100vh; }
+        #canvasContainer { flex: 1; position: relative; overflow: hidden; background: #000; }
+        #gameCanvas { display: block; image-rendering: pixelated; }
+        
+        #sidebar { width: 300px; background: #1e1e24; padding: 20px; display: flex; flex-direction: column; border-left: 1px solid #333; }
+        
+        #hud { background: #2b2b36; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #444; }
+        .hud-item { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; color: #aaa; }
+        .hud-value { font-size: 18px; font-weight: 700; color: #fff; font-family: monospace; }
+        #money { color: #4caf50; }
+        #rating { color: #ffc107; }
+
+        #controls { overflow-y: auto; flex: 1; }
+        .btn { 
+            width: 100%; padding: 14px; margin: 6px 0; border: none; border-radius: 6px; 
+            cursor: pointer; color: #fff; text-align: left; font-weight: 600; font-size: 13px;
+            background: #373740; border-left: 4px solid transparent; transition: all 0.2s;
+        }
+        .btn:hover { background: #454550; transform: translateX(2px); }
+        .btn.active { background: #505060; border-left-color: #fff; }
+        
+        .btn-office { border-left-color: #2196F3; } .btn-condo { border-left-color: #4CAF50; }
+        .btn-hotel { border-left-color: #9C27B0; } .btn-food { border-left-color: #FF9800; }
+        .btn-parking { border-left-color: #607D8B; } .btn-stairs { border-left-color: #795548; }
+        .btn-elevator { border-left-color: #999; } .btn-clean { border-left-color: #00bcd4; background: #263238; margin-top: 10px; }
+        .btn-demolish { border-left-color: #f44336; margin-top: 20px; background: #3a2020; }
+        
+        #message { position: fixed; top: 40px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.85); color: white; padding: 10px 30px; border-radius: 50px; display: none; font-weight: bold; border: 1px solid #555; z-index: 100; }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="canvasContainer"><canvas id="gameCanvas"></canvas></div>
+        <div id="sidebar">
+            <div id="hud">
+                <div class="hud-item">Money <span class="hud-value" id="money">$0</span></div>
+                <div class="hud-item">Pop <span class="hud-value" id="population">0</span></div>
+                <div class="hud-item">Time <span class="hud-value" id="time">08:00</span></div>
+                <div class="hud-item">Day <span class="hud-value" id="day">1</span></div>
+                <div class="hud-item">Rating <span class="hud-value" id="rating">★</span></div>
+            </div>
+            <div id="controls">
+                <button class="btn btn-office" onclick="setMode('office')">Office ($8k)</button>
+                <button class="btn btn-condo" onclick="setMode('condo')">Condo ($15k)</button>
+                <button class="btn btn-hotel" onclick="setMode('hotel')">Hotel ($12k)</button>
+                <button class="btn btn-food" onclick="setMode('food')">Fast Food ($10k)</button>
+                <button class="btn btn-parking" onclick="setMode('parking')">Parking ($5k)</button>
+                <button class="btn btn-stairs" onclick="setMode('stairs')">Stairs ($1k)</button>
+                <button class="btn btn-elevator" onclick="setMode('elevator')">Elevator ($5k)</button>
+                <button class="btn btn-clean" onclick="setMode('clean')">Clean / Maintain</button>
+                <button class="btn btn-demolish" onclick="setMode('demolish')">Demolish</button>
+                <button class="btn btn-speed" onclick="toggleSpeed()">Speed: <span id="speedLabel">1x</span></button>
+            </div>
+        </div>
+    </div>
+    <div id="message"></div>
+
+    <script type="module">
+        import { CONFIG, TYPES, ROOM_PROPS, TowerEngine, beep } from './Engine.js';
+        import { GridManager } from './GridManager.js';
+        import { SystemsManager } from './SystemsManager.js';
+        import { SimulationManager } from './SimulationManager.js';
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const engine = new TowerEngine();
+        const gridMgr = new GridManager();
+        const sysMgr = new SystemsManager();
+        const simMgr = new SimulationManager();
+        let buildMode = null;
+
+        function resize() {
+            canvas.width = CONFIG.GRID_W * CONFIG.CELL_SIZE;
+            canvas.height = CONFIG.GRID_H * CONFIG.CELL_SIZE;
+            gridMgr.initCanvas(canvas.width, canvas.height);
+        }
+        resize();
+
+        window.setMode = (mode) => { buildMode = mode; document.querySelectorAll('.btn').forEach(b => b.classList.remove('active')); event.target.classList.add('active'); };
+        window.toggleSpeed = () => { document.getElementById('speedLabel').innerText = engine.setSpeed() + 'x'; };
+        function showMessage(msg) { const el = document.getElementById('message'); el.innerText = msg; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 3000); }
+
+        function updateLogic() {
+            for (let y = 0; y < CONFIG.GRID_H; y++) {
+                for (let x = 0; x < CONFIG.GRID_W; x++) {
+                    const cell = gridMgr.getCell(x, y);
+                    if (cell.isAnchor && (cell.type === TYPES.CONDO || cell.type === TYPES.HOTEL)) {
+                        let stress = 0;
+                        if (x>0 && gridMgr.getCell(x-1,y).type === TYPES.ELEVATOR) stress += 1;
+                        if (cell.dirt > 50) stress += 1;
+                        cell.stress = Math.min(cell.stress + stress, 100);
+                        if (stress === 0 && cell.stress > 0) cell.stress -= 0.1;
+                    }
+                }
+            }
+        }
+
+        function collectIncome() {
+            let total = 0;
+            let pop = simMgr.people.length;
+            const isNight = engine.isNight();
+
+            for (let y = 0; y < CONFIG.GRID_H; y++) {
+                for (let x = 0; x < CONFIG.GRID_W; x++) {
+                    const c = gridMgr.grid[y][x];
+                    if (!c.isAnchor || !c.connected) continue;
+                    
+                    if (c.stress > 80 || c.dirt > 80) continue;
+
+                    if (!isNight && c.type === TYPES.OFFICE) total += CONFIG.OFFICE_RENT;
+                    if (isNight && c.type === TYPES.HOTEL) total += CONFIG.HOTEL_RENT * Math.min(c.occupants.length, 3);
+                    if (c.type === TYPES.FOOD) total += CONFIG.FOOD_INCOME_PER * c.occupants.length;
+                    if (c.type === TYPES.PARKING) total += CONFIG.PARKING_INCOME;
+                    
+                    pop += c.occupants.length;
+                }
+            }
+            engine.money += total;
+            if (total > 0) showMessage(`Income: $${total.toLocaleString()}`);
+            
+            let stars = 1;
+            if (pop > 50) stars = 2; if (pop > 150) stars = 3; if (pop > 300) stars = 4; if (pop > 500) stars = 5;
+            engine.rating = stars;
+        }
+
+        canvas.addEventListener('click', e => {
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.floor((e.clientX - rect.left) / CONFIG.CELL_SIZE);
+            const y = Math.floor((e.clientY - rect.top) / CONFIG.CELL_SIZE);
+            
+            // Clean Mode Logic
+            if (buildMode === 'clean') { gridMgr.cleanRoom(x, y); return; }
+            if (buildMode === 'demolish') { 
+                if(gridMgr.demolish(x, y)) { gridMgr.checkConnectivity(); sysMgr.syncElevators(gridMgr.grid); }
+                return; 
+            }
+
+            if (!buildMode) return;
+            
+            // Determine Type
+            let type = 0;
+            switch(buildMode) {
+                case 'office': type = TYPES.OFFICE; break;
+                case 'condo': type = TYPES.CONDO; break;
+                case 'hotel': type = TYPES.HOTEL; break;
+                case 'food': type = TYPES.FOOD; break;
+                case 'stairs': type = TYPES.STAIRS; break;
+                case 'elevator': type = TYPES.ELEVATOR; break;
+                case 'parking': type = TYPES.PARKING; break;
+            }
+            
+            const props = ROOM_PROPS[type];
+            if (!props) return;
+
+            // Check Underground Restrictions
+            const isUnderground = y > CONFIG.LOBBY_FLOOR;
+            if (type === TYPES.PARKING && !isUnderground) { showMessage("Underground Only!"); return; }
+            if ((type === TYPES.OFFICE || type === TYPES.CONDO) && isUnderground) { showMessage("Needs Sunlight!"); return; }
+
+            if (engine.money >= props.cost) {
+                if (gridMgr.build(x, y, type)) {
+                    engine.money -= props.cost;
+                    if (type === TYPES.CONDO) engine.money += CONFIG.CONDO_SALE;
+                    gridMgr.checkConnectivity();
+                    sysMgr.syncElevators(gridMgr.grid);
+                } else {
+                    showMessage("Can't build there!");
+                }
+            } else showMessage("Not enough funds!");
+        });
+
+        let lastTime = 0;
+        function loop(ts) {
+            const dt = ts - lastTime || 16;
+            lastTime = ts;
+            const newDay = engine.update(dt);
+            if (newDay) collectIncome();
+            if (Math.random() < 0.02) gridMgr.makeRandomDirty();
+            
+            updateLogic(); 
+            
+            simMgr.update(dt, engine.speed, gridMgr.grid, sysMgr.elevators, engine.time);
+            sysMgr.update(simMgr.people);
+
+            ctx.clearRect(0,0, canvas.width, canvas.height);
+            const isNight = engine.isNight();
+            gridMgr.draw(ctx, isNight);
+            sysMgr.draw(ctx);
+            simMgr.draw(ctx);
+            
+            if (isNight) { ctx.fillStyle = 'rgba(0,0,30,0.3)'; ctx.fillRect(0,0,canvas.width, canvas.height); }
+
+            document.getElementById('money').innerText = `$${Math.floor(engine.money).toLocaleString()}`;
+            document.getElementById('time').innerText = engine.getFormattedTime();
+            document.getElementById('day').innerText = engine.day;
+            document.getElementById('population').innerText = simMgr.people.length;
+            document.getElementById('rating').innerText = '★'.repeat(engine.rating);
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
