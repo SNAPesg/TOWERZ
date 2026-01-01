@@ -13,7 +13,7 @@ class Person {
         this.elevator = null;
         this.targetElevatorX = 0;
         
-        this.shirtColor = isVisitor ? '#e91e63' : `hsl(${200 + Math.random()*40}, 70%, 50%)`;
+        this.shirtColor = isVisitor ? '#f44336' : '#2196F3'; // Red for hotel guests, Blue for office workers
         this.skinColor = '#ffccaa';
         this.heightVar = Math.random() * 2;
     }
@@ -186,20 +186,42 @@ export class SimulationManager {
         const time = Date.now();
         this.people.forEach(p => {
             const px = p.x * CONFIG.CELL_SIZE + CONFIG.CELL_SIZE / 2;
-            const py = p.y * CONFIG.CELL_SIZE + CONFIG.CELL_SIZE / 2 + 5;
+            const py = p.y * CONFIG.CELL_SIZE + CONFIG.CELL_SIZE - 2;
 
             ctx.save();
             ctx.translate(px, py);
-            ctx.fillStyle = p.skinColor; ctx.fillRect(-2, -12 - p.heightVar, 4, 4);
-            ctx.fillStyle = p.shirtColor; ctx.fillRect(-3, -8 - p.heightVar, 6, 6);
-            ctx.fillStyle = '#222';
-            let legOffset = 0;
-            if (p.state !== 'waiting' && p.state !== 'arrived' && p.state !== 'riding') {
-                if (Math.floor(time / 150) % 2 === 0) legOffset = 2; 
+
+            // Head
+            ctx.fillStyle = p.skinColor;
+            ctx.fillRect(-2, -14, 4, 4);
+
+            // Body
+            ctx.fillStyle = p.shirtColor;
+            ctx.fillRect(-3, -10, 6, 6);
+
+            // Legs
+            ctx.fillStyle = '#424242';
+            let legOffset = Math.sin(time / 100) * 2;
+            if (p.state === 'waiting' || p.state === 'arrived' || p.state === 'riding') {
+                legOffset = 0;
             }
-            ctx.fillRect(-2, -2 - p.heightVar, 2, 3 + (legOffset ? 0 : 2));
-            ctx.fillRect(1, -2 - p.heightVar, 2, 3 + (legOffset ? 2 : 0));
+            ctx.fillRect(-2, -4, 2, 4 + legOffset);
+            ctx.fillRect(1, -4, 2, 4 - legOffset);
+
             ctx.restore();
         });
+    }
+
+    getTotalPopulation(grid) {
+        let pop = this.people.length;
+        for (let y = 0; y < CONFIG.GRID_H; y++) {
+            for (let x = 0; x < CONFIG.GRID_W; x++) {
+                const c = grid[y][x];
+                if (c.isAnchor) {
+                    pop += c.occupants.length;
+                }
+            }
+        }
+        return pop;
     }
 }
