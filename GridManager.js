@@ -20,12 +20,10 @@ export class GridManager {
         }
     }
 
-    // [ADDED] Missing method
     updateDirt() {
         // Placeholder for dirt logic accumulation
     }
 
-    // [ADDED] Missing method
     updateStress() {
         // Placeholder for stress logic
     }
@@ -64,27 +62,47 @@ export class GridManager {
 
     initCanvas(w, h) { this.bgCanvas.width = w; this.bgCanvas.height = h; this.dirty = true; }
 
-    canBuild(x, y, type) {
+    canBuild(x, y, type, buildableTypes) {
+        if (!buildableTypes.has(type)) return false; // Check against star rating unlocks
         if (!ROOM_PROPS[type]) return false;
+
         const width = ROOM_PROPS[type].w;
         if (x + width > CONFIG.GRID_W) return false; 
+
         const isUnderground = y > CONFIG.LOBBY_FLOOR;
+        // Enforce underground-only rule
         if ((type === TYPES.PARKING || type === TYPES.METRO) && !isUnderground) return false;
-        if ((type === TYPES.OFFICE || type === TYPES.CONDO) && isUnderground) return false;
+        // Enforce above-ground-only rule
+        if ((type === TYPES.OFFICE || type === TYPES.CONDO || type === TYPES.HOTEL) && isUnderground) return false;
+
         for (let i = 0; i < width; i++) {
             if (this.grid[y][x + i].type !== TYPES.EMPTY) return false;
         }
         return true;
     }
 
-    build(x, y, type) {
-        if (!this.canBuild(x, y, type)) return false;
+    build(x, y, type, engine) {
+        if (!this.canBuild(x, y, type, engine.buildable)) return false;
+
         const width = ROOM_PROPS[type].w;
         this.grid[y][x] = { type, connected: false, occupants: [], dirt: 0, stress: 0, isAnchor: true, width, masterX: x };
         for (let i = 1; i < width; i++) {
             this.grid[y][x + i] = { type: TYPES.TAKEN, connected: false, occupants: [], isAnchor: false, masterX: x };
         }
-        this.dirty = true; beep(500, 60); return true;
+
+        // Buried Treasure Logic
+        const isDeepUnderground = y > CONFIG.LOBBY_FLOOR + 10;
+        if (isDeepUnderground && Math.random() < 0.05) { // 5% chance
+            const treasure = 50000 + Math.floor(Math.random() * 200000);
+            engine.money += treasure;
+            // TODO: Add a visual indicator for the user
+            console.log(`Found buried treasure worth $${treasure}!`);
+            beep(2000, 200, 'triangle');
+        }
+
+        this.dirty = true;
+        beep(500, 60);
+        return true;
     }
 
     demolish(x, y) {
@@ -99,23 +117,37 @@ export class GridManager {
     }
 
     checkConnectivity() {
-        for (let y = 0; y < CONFIG.GRID_H; y++)
-            for (let x = 0; x < CONFIG.GRID_W; x++)
-                this.grid[y][x].connected = (y === CONFIG.LOBBY_FLOOR);
-
+        // This is a simple flood fill from all lobby and skylobby points.
         const queue = [];
         const visited = new Set();
-        for (let x = 0; x < CONFIG.GRID_W; x++) queue.push({x, y: CONFIG.LOBBY_FLOOR});
-        while (queue.length) {
+
+        for (let y = 0; y < CONFIG.GRID_H; y++) {
+            for (let x = 0; x < CONFIG.GRID_W; x++) {
+                this.grid[y][x].connected = false; // Reset all
+                if (this.grid[y][x].type === TYPES.LOBBY || this.grid[y][x].type === TYPES.SKY_LOBBY) {
+                    queue.push({x, y});
+                    visited.add(`${x},${y}`);
+                    this.grid[y][x].connected = true;
+                }
+            }
+        }
+
+        while (queue.length > 0) {
             const {x, y} = queue.shift();
-            const key = `${x},${y}`;
-            if (visited.has(key)) continue;
-            visited.add(key);
-            this.grid[y][x].connected = true;
+
+            // Check neighbors (up, down, left, right)
             [[0,1],[0,-1],[1,0],[-1,0]].forEach(([dx, dy]) => {
-                const nx = x + dx, ny = y + dy;
-                if (nx >= 0 && nx < CONFIG.GRID_W && ny >= 0 && ny < CONFIG.GRID_H) {
-                    if (this.grid[ny][nx].type !== TYPES.EMPTY) queue.push({x: nx, y: ny});
+                const nx = x + dx;
+                const ny = y + dy;
+                const key = `${nx},${ny}`;
+
+                if (nx >= 0 && nx < CONFIG.GRID_W && ny >= 0 && ny < CONFIG.GRID_H && !visited.has(key)) {
+                    // Connectivity requires a walkable tile type
+                    if (this.grid[ny][nx].type !== TYPES.EMPTY) {
+                        this.grid[ny][nx].connected = true;
+                        visited.add(key);
+                        queue.push({x: nx, y: ny});
+                    }
                 }
             });
         }
@@ -129,7 +161,8 @@ export class GridManager {
     redrawBackground() {
         const ctx = this.bgCtx;
         ctx.fillStyle = '#87CEEB'; ctx.fillRect(0, 0, this.bgCanvas.width, this.bgCanvas.height);
-        ctx.fillStyle = '#3E2723'; ctx.fillRect(0, (CONFIG.LOBBY_FLOOR + 1) * CONFIG.CELL_SIZE, this.bgCanvas.width, 1000);
+        ctx.fillStyle = '#3E2723'; ctx.fillRect(0, (CONFIG.LOBBY_FLOOR + 1) * CONFIG.CELL_SIZE, this.bgCanvas.width, CONFIG.GRID_H * CONFIG.CELL_SIZE);
+
         for (let y = 0; y < CONFIG.GRID_H; y++) {
             for (let x = 0; x < CONFIG.GRID_W; x++) {
                 const c = this.grid[y][x];
@@ -143,21 +176,28 @@ export class GridManager {
         const cs = CONFIG.CELL_SIZE;
         const px = x * cs, py = y * cs, w = cell.width * cs;
         const sprite = this.sprites[cell.type];
+
         if (sprite) {
-            ctx.drawImage(sprite, px, py);
+            ctx.drawImage(sprite, px, py, w, cs);
         } else {
-            // Infrastructure color fallbacks
+            // Fallback colors for unsprited types
             switch(cell.type) {
                 case TYPES.SECURITY: ctx.fillStyle = '#1A237E'; break;
                 case TYPES.METRO: ctx.fillStyle = '#212121'; break;
                 case TYPES.LOBBY: ctx.fillStyle = '#BDBDBD'; break;
+                case TYPES.SKY_LOBBY: ctx.fillStyle = '#E0E0E0'; break;
                 case TYPES.ELEVATOR: ctx.fillStyle = '#444'; break;
+                case TYPES.MEDICAL: ctx.fillStyle = '#C62828'; break;
+                case TYPES.RECYCLING: ctx.fillStyle = '#2E7D32'; break;
                 default: ctx.fillStyle = '#616161';
             }
             ctx.fillRect(px + 1, py + 1, w - 2, cs - 2);
         }
+
         if (!cell.connected && cell.type !== TYPES.LOBBY) {
-            ctx.strokeStyle = 'red'; ctx.strokeRect(px + 2, py + 2, w - 4, cs - 4);
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(px + 2, py + 2, w - 4, cs - 4);
         }
     }
 }

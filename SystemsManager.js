@@ -1,7 +1,7 @@
-import { CONFIG, TYPES, beep } from './Engine.js';
+import { CONFIG, TYPES, ROOM_PROPS, beep } from './Engine.js';
 
 class ElevatorCar {
-    constructor(x, stopsAt = null) {
+    constructor(x, typeProps) {
         this.x = x;
         this.y = CONFIG.LOBBY_FLOOR;
         this.passengers = [];
@@ -9,18 +9,32 @@ class ElevatorCar {
         this.direction = 0; // 0: Idle, 1: Up, -1: Down
         this.doorsOpen = false;
         this.doorTimer = 0;
-        this.stopsAt = stopsAt; 
+
+        // New properties from ROOM_PROPS
+        this.type = typeProps.elevatorType || 'STANDARD';
+        this.speed = typeProps.speed || 0.2;
+        this.capacity = typeProps.capacity || 8;
+
+        // Zone definition [minFloor, maxFloor]
+        this.zone = [0, CONFIG.GRID_H - 1];
     }
 
-    canStopAt(floor) {
-        if (!this.stopsAt) return true; 
-        return this.stopsAt.has(floor);
-    }
-
-    addRequest(floor) {
+    // Agent calls this to request a pickup from a floor
+    requestPickup(floor, direction) {
         if (this.canStopAt(floor)) {
             this.requests.add(floor);
         }
+    }
+
+    // Agent calls this when they get in the car
+    addDestination(floor) {
+        if (this.canStopAt(floor)) {
+            this.requests.add(floor);
+        }
+    }
+
+    canStopAt(floor) {
+        return floor >= this.zone[0] && floor <= this.zone[1];
     }
 
     update(peopleList) {
@@ -41,42 +55,59 @@ class ElevatorCar {
         }
 
         if (this.direction !== 0) {
-            // Find next target floor
-            const destinations = Array.from(this.requests).sort((a,b) => a-b);
-            let nextStop = -1;
+            const nextStop = this.findNextStop();
 
-            if (this.direction === 1) { // Going Up
-                nextStop = destinations.find(f => f >= this.y + 0.1);
-            } else { // Going Down
-                // Find highest floor below us
-                const below = destinations.filter(f => f <= this.y - 0.1);
-                if (below.length > 0) nextStop = below[below.length - 1];
-            }
-
-            // No stops in this direction?
             if (nextStop === -1) {
-                if (destinations.length > 0) this.direction *= -1; // Switch direction
-                else this.direction = 0; // Idle
+                // No more stops in this direction, try switching
+                this.direction *= -1;
+                const nextStopAfterTurn = this.findNextStop();
+                if (nextStopAfterTurn === -1) {
+                    this.direction = 0; // No requests anywhere, idle.
+                }
                 return;
             }
 
-            // Move
             const dist = nextStop - this.y;
             const absDist = Math.abs(dist);
             
-            if (absDist < 0.1) {
-                // Arrived
+            if (absDist < this.speed) {
+                // Arrived at nextStop
                 this.y = nextStop;
                 this.doorsOpen = true;
-                this.doorTimer = 60;
+                this.doorTimer = 60; // Open doors for 1 second
                 this.requests.delete(nextStop);
+                // Also remove any passenger destinations for this floor
+                this.passengers.forEach(p => {
+                    if (Math.round(p.destinationY) === this.y) {
+                        this.requests.delete(this.y);
+                    }
+                });
                 beep(800, 50, 'sine');
             } else {
                 // Move car
-                let speed = 0.2; 
-                if (this.stopsAt) speed = 0.4; // Express is faster
-                this.y += Math.sign(dist) * Math.min(absDist, speed);
+                this.y += Math.sign(dist) * this.speed;
             }
+        }
+    }
+
+    findNextStop() {
+        const destinations = Array.from(this.requests).sort((a,b) => a-b);
+        const isFull = this.passengers.length >= this.capacity;
+
+        // Destinations for passengers inside the car are always valid stops.
+        const passengerDestinations = new Set(this.passengers.map(p => Math.round(p.destinationY)));
+
+        if (this.direction === 1) { // Going Up
+            return destinations.find(f => {
+                if (f <= this.y) return false;
+                // Stop if someone needs to get off OR if the car is not full (it's a pickup)
+                return passengerDestinations.has(f) || !isFull;
+            }) ?? -1;
+        } else { // Going Down
+            return destinations.reverse().find(f => {
+                if (f >= this.y) return false;
+                return passengerDestinations.has(f) || !isFull;
+            }) ?? -1;
         }
     }
 
@@ -85,68 +116,63 @@ class ElevatorCar {
             this.direction = 0;
             return;
         }
-        // Simple logic: Go towards closest request
-        const floors = Array.from(this.requests);
-        let closest = floors[0];
-        let minDist = Math.abs(floors[0] - this.y);
-        
-        floors.forEach(f => {
-            const d = Math.abs(f - this.y);
-            if (d < minDist) {
-                minDist = d;
-                closest = f;
-            }
-        });
-        
-        if (minDist < 0.1) this.direction = 0; // Already there (shouldn't happen often due to door logic)
-        else this.direction = closest > this.y ? 1 : -1;
+
+        // If idle, go towards the nearest request
+        if (this.direction === 0) {
+            const floors = Array.from(this.requests);
+            let closest = floors[0];
+            let minDist = Math.abs(floors[0] - this.y);
+
+            floors.forEach(f => {
+                const d = Math.abs(f - this.y);
+                if (d < minDist) {
+                    minDist = d;
+                    closest = f;
+                }
+            });
+            this.direction = closest > this.y ? 1 : -1;
+        }
+        // Otherwise, keep current direction unless there are no more requests in that direction
     }
 
     handlePassengers(peopleList) {
         const currentFloor = Math.round(this.y);
 
-        // 1. UNLOAD
-        // Filter out people who want to get off here
+        // 1. UNLOAD passengers whose destination is the current floor
         for (let i = this.passengers.length - 1; i >= 0; i--) {
             const p = this.passengers[i];
-            
-            // Check if this is the floor they wanted (Destination Y)
             if (Math.round(p.destinationY) === currentFloor) {
-                // Kick them out
                 p.elevator = null;
                 p.x = this.x;
                 p.y = this.y;
                 p.visible = true;
                 p.state = 'idle'; 
-                
-                // IMPORTANT: Tell them to figure out where to walk now!
                 p.decideNextMove(); 
-
                 this.passengers.splice(i, 1);
             }
         }
 
-        // 2. LOAD
-        if (this.passengers.length < 20) {
-            // Find people standing exactly here waiting
+        // 2. LOAD passengers waiting on this floor IF there is capacity
+        if (this.passengers.length < this.capacity) {
             const waiting = peopleList.filter(p => 
                 p.state === 'waiting_for_elev' &&
                 Math.abs(p.x - this.x) < 1 &&
-                Math.abs(p.y - this.y) < 1
+                Math.round(p.y) === currentFloor
             );
 
             waiting.forEach(p => {
-                if (this.passengers.length < 20) {
-                    // Check if elevator can go to their destination
-                    if (this.canStopAt(Math.round(p.destinationY))) {
-                        p.state = 'riding';
-                        p.visible = false;
-                        p.elevator = this;
-                        this.passengers.push(p);
-                        
-                        // Add their destination to elevator requests
-                        this.addRequest(Math.round(p.destinationY));
+                // Check if car is full and can take them to their destination
+                if (this.passengers.length < this.capacity && this.canStopAt(Math.round(p.destinationY))) {
+                    // If this is a service elevator, simulate staff-only by random chance
+                    if (this.type === 'SERVICE' && Math.random() > 0.1) {
+                        return; // Not staff, can't board
                     }
+
+                    p.state = 'riding';
+                    p.visible = false;
+                    p.elevator = this;
+                    this.passengers.push(p);
+                    this.addDestination(Math.round(p.destinationY));
                 }
             });
         }
@@ -159,23 +185,28 @@ export class SystemsManager {
     }
 
     syncElevators(grid) {
-        // Find shafts
-        const shaftX = new Set();
+        const shaftData = new Map(); // Use a map to store props for each shaft
         for(let y=0; y<CONFIG.GRID_H; y++) {
             for(let x=0; x<CONFIG.GRID_W; x++) {
-                if(grid[y][x].type === TYPES.ELEVATOR) shaftX.add(x);
+                const cell = grid[y][x];
+                const isElevator = cell.type === TYPES.ELEVATOR || cell.type === TYPES.ELEVATOR_EXPRESS || cell.type === TYPES.ELEVATOR_SERVICE;
+                if (isElevator) {
+                    if (!shaftData.has(x)) {
+                        shaftData.set(x, ROOM_PROPS[cell.type]);
+                    }
+                }
             }
         }
 
-        // Create/Update elevators
-        shaftX.forEach(x => {
+        // Create new elevators for new shafts
+        shaftData.forEach((props, x) => {
             if (!this.elevators.find(e => e.x === x)) {
-                this.elevators.push(new ElevatorCar(x));
+                this.elevators.push(new ElevatorCar(x, props));
             }
         });
         
-        // Remove deleted elevators
-        this.elevators = this.elevators.filter(e => shaftX.has(e.x));
+        // Remove elevators for deleted shafts
+        this.elevators = this.elevators.filter(e => shaftData.has(e.x));
     }
 
     update(peopleList) {
@@ -185,17 +216,22 @@ export class SystemsManager {
     draw(ctx) {
         const cs = CONFIG.CELL_SIZE;
         this.elevators.forEach(e => {
-            // Shaft is drawn by grid, we draw the car
-            const px = e.x * cs + 2;
-            const py = e.y * cs + 2;
+            const px = e.x * cs;
+            const py = e.y * cs;
             
-            ctx.fillStyle = e.doorsOpen ? '#FFF' : '#B71C1C';
-            ctx.fillRect(px, py, cs-4, cs-4);
+            // Car color based on type
+            let carColor = '#B71C1C'; // Standard
+            if (e.type === 'EXPRESS') carColor = '#0D47A1';
+            if (e.type === 'SERVICE') carColor = '#F57F17';
+
+            ctx.fillStyle = e.doorsOpen ? '#FFF' : carColor;
+            ctx.fillRect(px + 2, py + 2, cs-4, cs-4);
             
-            // Draw passenger count dot
+            // Draw passenger count indicator
             if (e.passengers.length > 0) {
-                ctx.fillStyle = '#00E676';
-                ctx.fillRect(px + 4, py + 4, 4, 4);
+                ctx.fillStyle = e.passengers.length >= e.capacity ? '#FF0000' : '#00E676';
+                const capacityRatio = Math.min(e.passengers.length / e.capacity, 1);
+                ctx.fillRect(px + 3, py + (cs - 6), (cs - 6) * capacityRatio, 2);
             }
         });
     }

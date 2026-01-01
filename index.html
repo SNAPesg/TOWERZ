@@ -27,11 +27,11 @@
         }
         .btn:hover { background: #5a5a5a; border-color: #777; }
         .btn.active { background: #1976D2; border-color: #42A5F5; }
+        .btn.disabled { background: #383838; color: #777; cursor: not-allowed; }
         .btn.speed { font-weight: bold; }
         .btn.pause { background: #D32F2F; }
         .btn.pause:hover { background: #F44336; }
         
-        /* Tooltip style */
         .tool-cost { font-size: 11px; float: right; color: #bbb; }
     </style>
 </head>
@@ -58,7 +58,7 @@
     </div>
 
     <script type="module">
-        import { TowerEngine, CONFIG, TYPES, ROOM_PROPS, beep } from './Engine.js';
+        import { TowerEngine, CONFIG, TYPES, ROOM_PROPS } from './Engine.js';
         import { GridManager } from './GridManager.js';
         import { SimulationManager } from './SimulationManager.js';
         import { SystemsManager } from './SystemsManager.js';
@@ -66,7 +66,6 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
 
-        // Initialize Canvas
         canvas.width = CONFIG.GRID_W * CONFIG.CELL_SIZE;
         canvas.height = CONFIG.GRID_H * CONFIG.CELL_SIZE;
 
@@ -77,118 +76,98 @@
         const simMgr = new SimulationManager();
         const sysMgr = new SystemsManager();
 
-        // UI State
-        let currentTool = null; // Type string or null
+        let currentTool = null;
 
-        // Generate Build Buttons
-        const buildContainer = document.getElementById('buildTools');
-        const tools = [
-            { label: 'Lobby', type: 'LOBBY' },
-            { label: 'Stairs', type: 'STAIRS' },
-            { label: 'Elevator', type: 'ELEVATOR' },
-            { label: 'Office', type: 'OFFICE' },
-            { label: 'Condo', type: 'CONDO' },
-            { label: 'Hotel', type: 'HOTEL' },
-            { label: 'Food Court', type: 'FOOD' },
-            { label: 'Cinema', type: 'CINEMA' },
-            { label: 'Parking', type: 'PARKING' },
-            { label: 'Demolish', type: 'DEMOLISH' }
+        const allTools = [
+            { label: 'Lobby', type: 'LOBBY' }, { label: 'Stairs', type: 'STAIRS' },
+            { label: 'Elevator', type: 'ELEVATOR' }, { label: 'Express Elev', type: 'ELEVATOR_EXPRESS' },
+            { label: 'Service Elev', type: 'ELEVATOR_SERVICE' }, { label: 'Office', type: 'OFFICE' },
+            { label: 'Condo', type: 'CONDO' }, { label: 'Hotel', type: 'HOTEL' },
+            { label: 'Food Court', type: 'FOOD' }, { label: 'Cinema', type: 'CINEMA' },
+            { label: 'Security', type: 'SECURITY' }, { label: 'Cleaning', type: 'CLEANING_SERVICE' },
+            { label: 'Parking', type: 'PARKING' }, { label: 'Medical', type: 'MEDICAL' },
+            { label: 'Recycling', type: 'RECYCLING' }, { label: 'Metro', type: 'METRO' },
+            { label: 'Cathedral', type: 'CATHEDRAL' }, { label: 'Demolish', type: 'DEMOLISH' }
         ];
 
-        tools.forEach(t => {
-            const btn = document.createElement('button');
-            btn.className = 'btn';
-            
-            let cost = '';
-            if (t.type !== 'DEMOLISH' && ROOM_PROPS[TYPES[t.type]]) {
-                cost = `$${ROOM_PROPS[TYPES[t.type]].cost.toLocaleString()}`;
-            }
+        function generateBuildButtons() {
+            const container = document.getElementById('buildTools');
+            container.innerHTML = ''; // Clear existing buttons
+            allTools.forEach(t => {
+                const btn = document.createElement('button');
+                btn.className = 'btn';
+                const typeId = TYPES[t.type];
+                const isBuildable = engine.buildable.has(typeId) || t.type === 'DEMOLISH';
 
-            btn.innerHTML = `${t.label} <span class="tool-cost">${cost}</span>`;
-            
-            btn.onclick = () => {
-                document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
-                if (currentTool === t.type) {
-                    currentTool = null; // Deselect
-                } else {
-                    currentTool = t.type;
-                    btn.classList.add('active');
+                if (!isBuildable) btn.classList.add('disabled');
+
+                let cost = '';
+                if (t.type !== 'DEMOLISH' && ROOM_PROPS[typeId]) {
+                    cost = `$${ROOM_PROPS[typeId].cost.toLocaleString()}`;
                 }
-            };
-            buildContainer.appendChild(btn);
-        });
+                btn.innerHTML = `${t.label} <span class="tool-cost">${cost}</span>`;
 
-        // Mouse Handling
-        canvas.addEventListener('mousedown', handleInput);
-        
-        function handleInput(e) {
+                btn.onclick = () => {
+                    if (!isBuildable) return;
+                    document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+                    currentTool = (currentTool === t.type) ? null : t.type;
+                    if (currentTool) btn.classList.add('active');
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
             if (!currentTool) return;
-
             const rect = canvas.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const mouseY = e.clientY - rect.top;
-
-            const gx = Math.floor(mouseX / CONFIG.CELL_SIZE);
-            const gy = Math.floor(mouseY / CONFIG.CELL_SIZE);
+            const gx = Math.floor((e.clientX - rect.left) / CONFIG.CELL_SIZE);
+            const gy = Math.floor((e.clientY - rect.top) / CONFIG.CELL_SIZE);
 
             if (gx < 0 || gx >= CONFIG.GRID_W || gy < 0 || gy >= CONFIG.GRID_H) return;
 
             if (currentTool === 'DEMOLISH') {
                 if(gridMgr.demolish(gx, gy)) {
-                    gridMgr.checkConnectivity();
-                    sysMgr.syncElevators(gridMgr.grid);
+                    // Cost can be added here
                 }
             } else {
                 const typeId = TYPES[currentTool];
                 const cost = ROOM_PROPS[typeId].cost;
-
                 if (engine.money >= cost) {
-                    if (gridMgr.build(gx, gy, typeId)) {
+                    if (gridMgr.build(gx, gy, typeId, engine)) {
                         engine.money -= cost;
-                        gridMgr.checkConnectivity();
-                        sysMgr.syncElevators(gridMgr.grid);
                     }
                 } else {
                     alert("Not enough money!");
                 }
             }
-        }
+            gridMgr.checkConnectivity();
+            sysMgr.syncElevators(gridMgr.grid);
+        });
 
-        // Logic Helpers
-        let collectedOffice = false;
-        let collectedHotel = false;
-
-        function collectOfficeIncome() {
-            let income = 0;
+        function collectDailyIncome() {
+            let totalIncome = 0;
             for (let y = 0; y < CONFIG.GRID_H; y++) {
                 for (let x = 0; x < CONFIG.GRID_W; x++) {
                     const cell = gridMgr.grid[y][x];
-                    if (cell.isAnchor && cell.type === TYPES.OFFICE) {
-                        income += CONFIG.OFFICE_RENT * cell.width;
+                    if (cell.isAnchor && cell.connected) {
+                        switch(cell.type) {
+                            case TYPES.OFFICE: totalIncome += CONFIG.OFFICE_RENT * cell.width; break;
+                            case TYPES.HOTEL:  totalIncome += CONFIG.HOTEL_RENT * cell.width; break; // Simplified
+                            case TYPES.PARKING:totalIncome += CONFIG.PARKING_INCOME; break;
+                        }
                     }
                 }
             }
-            if(income > 0) beep(1200, 100, 'triangle');
-            engine.money += income;
+            engine.money += totalIncome;
         }
 
-        function collectHotelIncome() {
-            // Simple logic: assume occupancy logic exists later
-            engine.money += 0; 
-        }
-
-        function collectOtherIncome() { /* Simplified */ }
-        function collectTaxes() { /* Simplified */ }
-
-        // Global Funcs for HTML Buttons
-        window.toggleSpeed = function() {
-            const speed = engine.setSpeed();
-            document.getElementById('speedBtn').innerText = `Speed: ${speed}x`;
+        // Global Functions
+        window.toggleSpeed = () => {
+            document.getElementById('speedBtn').innerText = `Speed: ${engine.setSpeed()}x`;
         };
-        window.togglePause = function() {
+        window.togglePause = () => {
             engine.togglePause();
-            const btn = document.querySelector('.btn.pause');
-            btn.innerText = engine.paused ? 'Resume' : 'Pause';
+            document.querySelector('.btn.pause').innerText = engine.paused ? 'Resume' : 'Pause';
         };
 
         // Main Loop
@@ -200,15 +179,7 @@
 
             const newDay = engine.update(dt);
             if (newDay) {
-                collectOtherIncome();
-                collectedOffice = false;
-                collectedHotel = false;
-            }
-
-            // Income Triggers
-            if (engine.time >= 12 * 60 && !collectedOffice) {
-                collectOfficeIncome();
-                collectedOffice = true;
+                collectDailyIncome();
             }
 
             gridMgr.updateDirt();
@@ -217,16 +188,14 @@
             simMgr.update(dt, engine.speed, gridMgr.grid, sysMgr.elevators, engine.time);
             sysMgr.update(simMgr.people);
 
-            // Draw
+            // Draw calls
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             const isNight = engine.isNight();
             gridMgr.draw(ctx, isNight);
-
             if (isNight) {
                 ctx.fillStyle = 'rgba(0, 0, 40, 0.3)';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
             }
-
             sysMgr.draw(ctx);
             simMgr.draw(ctx);
 
@@ -235,11 +204,16 @@
             document.getElementById('time').innerText = engine.getFormattedTime();
             document.getElementById('day').innerText = engine.day;
             document.getElementById('population').innerText = simMgr.getTotalPopulation();
-            document.getElementById('rating').innerText = '★'.repeat(engine.rating);
+            const oldRating = document.getElementById('rating').innerText.length;
+            if (engine.rating !== oldRating) {
+                document.getElementById('rating').innerText = '★'.repeat(engine.rating);
+                generateBuildButtons(); // Re-generate buttons on rating change
+            }
 
             requestAnimationFrame(loop);
         }
 
+        generateBuildButtons();
         requestAnimationFrame(loop);
     </script>
 </body>

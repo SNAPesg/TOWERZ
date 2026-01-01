@@ -6,7 +6,6 @@ export const CONFIG = {
     LOBBY_FLOOR: 25, 
     OFFICE_RENT: 300,
     HOTEL_RENT: 500,
-    CONDO_RENT: 0,
     CONDO_SALE: 150000,
     FOOD_INCOME_PER: 25,
     PARKING_INCOME: 50,
@@ -18,17 +17,17 @@ export const TYPES = {
     EMPTY: 0, LOBBY: 1, OFFICE: 2, CONDO: 3, HOTEL: 4,
     FOOD: 5, PARKING: 6, STAIRS: 7, ELEVATOR: 8,
     CLEANING_SERVICE: 9, 
+    ELEVATOR_EXPRESS: 10,
     CINEMA: 11,      
     CATHEDRAL: 12,   
-    TAKEN: 99,
-    ELEVATOR_EXPRESS: 10,
     SECURITY: 13,
     METRO: 14,
-    // [ADDED] Missing types referenced in GridManager/SystemsManager
     SKY_LOBBY: 15,
-    MEDICAL: 16,
-    RECYCLING: 17,
-    HOTEL_SUITE: 18
+    MEDICAL: 16,     // New
+    RECYCLING: 17,   // New
+    HOTEL_SUITE: 18,
+    ELEVATOR_SERVICE: 19, // New
+    TAKEN: 99,
 };
 
 export const ROOM_PROPS = {
@@ -38,17 +37,40 @@ export const ROOM_PROPS = {
     [TYPES.FOOD]:     { w: 3, cost: 100000 },
     [TYPES.PARKING]:  { w: 1, cost: 2000 },
     [TYPES.STAIRS]:   { w: 1, cost: 500 },
-    [TYPES.ELEVATOR]: { w: 1, cost: 3000 },
-    [TYPES.ELEVATOR_EXPRESS]: { w: 1, cost: 10000 },
     [TYPES.CLEANING_SERVICE]: { w: 2, cost: 5000 }, 
     [TYPES.CINEMA]:   { w: 6, cost: 15000 },
     [TYPES.CATHEDRAL]:{ w: 4, cost: 50000 },
     [TYPES.SECURITY]: { w: 2, cost: 10000 },
     [TYPES.METRO]:    { w: 4, cost: 500000 },
     [TYPES.LOBBY]:    { w: 1, cost: 0 },
-    [TYPES.SKY_LOBBY]:{ w: 2, cost: 10000 }, // Added
-    [TYPES.EMPTY]:    { w: 1, cost: 0 }
+    [TYPES.SKY_LOBBY]:{ w: 2, cost: 10000 },
+    [TYPES.MEDICAL]:  { w: 3, cost: 250000 },
+    [TYPES.RECYCLING]:{ w: 2, cost: 120000 },
+    [TYPES.EMPTY]:    { w: 1, cost: 0 },
+
+    // Elevator types with specific properties
+    [TYPES.ELEVATOR]: {
+        w: 1, cost: 3000,
+        elevatorType: 'STANDARD', speed: 0.2, capacity: 8
+    },
+    [TYPES.ELEVATOR_EXPRESS]: {
+        w: 1, cost: 10000,
+        elevatorType: 'EXPRESS', speed: 0.4, capacity: 12
+    },
+    [TYPES.ELEVATOR_SERVICE]: {
+        w: 1, cost: 4000,
+        elevatorType: 'SERVICE', speed: 0.15, capacity: 10
+    }
 };
+
+export const STAR_LEVELS = {
+    1: { pop: 0, unlocks: [TYPES.LOBBY, TYPES.OFFICE, TYPES.CONDO, TYPES.FOOD, TYPES.STAIRS, TYPES.ELEVATOR] },
+    2: { pop: 300, unlocks: [TYPES.HOTEL, TYPES.CLEANING_SERVICE, TYPES.SECURITY, TYPES.ELEVATOR_SERVICE] },
+    3: { pop: 1000, unlocks: [TYPES.ELEVATOR_EXPRESS, TYPES.SKY_LOBBY, TYPES.CINEMA, TYPES.PARKING, TYPES.MEDICAL, TYPES.RECYCLING] },
+    4: { pop: 5000, unlocks: [TYPES.METRO], specialReqs: ['vip', 'parking', 'medical', 'recycling'] },
+    5: { pop: 10000, unlocks: [TYPES.CATHEDRAL], specialReqs: ['metro'] }
+};
+
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 export function beep(freq = 600, dur = 50, type = 'square') {
@@ -68,11 +90,12 @@ export function beep(freq = 600, dur = 50, type = 'square') {
 export class TowerEngine {
     constructor() {
         this.money = CONFIG.STARTING_MONEY;
-        this.time = 6 * 60; // Start at 06:00
+        this.time = 6 * 60;
         this.day = 1;
         this.speed = 1;
-        this.rating = 1;
+        this.rating = 1; // Star rating
         this.paused = false;
+        this.buildable = new Set(STAR_LEVELS[1].unlocks);
     }
 
     update(dt) {
@@ -111,21 +134,44 @@ export class TowerEngine {
 
     updateRating(stats) {
         let newRating = 1;
-        if (stats.pop > 300 && stats.hasElevator) {
-            newRating = 2;
-            if (stats.pop > 1000 && stats.hasSecurity && stats.hasFood) {
-                newRating = 3;
-                if (stats.pop > 5000 && stats.vipGood) {
-                    newRating = 4;
-                    if (stats.pop > 10000 && stats.hasMetro) {
-                        newRating = 5;
-                        if (stats.pop > 15000 && stats.hasCathedral) {
-                            newRating = 6; 
-                        }
-                    }
+        for (let i = 5; i > 1; i--) {
+            const level = STAR_LEVELS[i];
+            if (stats.pop >= level.pop) {
+
+                // Check special requirements
+                let allReqsMet = true;
+                if (level.specialReqs) {
+                    if (level.specialReqs.includes('vip') && !stats.vipGood) allReqsMet = false;
+                    if (level.specialReqs.includes('metro') && !stats.hasMetro) allReqsMet = false;
+                    if (level.specialReqs.includes('parking') && !stats.hasParking) allReqsMet = false;
+                    if (level.specialReqs.includes('medical') && !stats.hasMedical) allReqsMet = false;
+                    if (level.specialReqs.includes('recycling') && !stats.hasRecycling) allReqsMet = false;
+                }
+
+                if (allReqsMet) {
+                    newRating = i;
+                    break;
                 }
             }
         }
-        this.rating = newRating;
+
+        // Check for rating loss
+        if (this.rating > 1 && stats.pop < STAR_LEVELS[this.rating].pop) {
+            // Simple derank, could be more complex
+            newRating = Math.max(1, this.rating - 1);
+        }
+
+        if (newRating !== this.rating) {
+            this.rating = newRating;
+            this.updateBuildableTypes();
+            beep(1500, 150, 'sawtooth');
+        }
+    }
+
+    updateBuildableTypes() {
+        this.buildable.clear();
+        for (let i = 1; i <= this.rating; i++) {
+            STAR_LEVELS[i].unlocks.forEach(type => this.buildable.add(type));
+        }
     }
 }
