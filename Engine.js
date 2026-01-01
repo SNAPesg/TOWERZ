@@ -87,4 +87,12 @@ export class TowerEngine {
         this.speed = this.speed % 4 + 1;
         return this.speed;
     }
+
+    updateRating(pop) {
+        if (pop > 500) this.rating = 5;
+        else if (pop > 300) this.rating = 4;
+        else if (pop > 150) this.rating = 3;
+        else if (pop > 50) this.rating = 2;
+        else this.rating = 1;
+    }
 }

@@ -31,17 +31,24 @@ export class GridManager {
     // New Multi-Tile Build Logic
     canBuild(x, y, type) {
         const width = ROOM_PROPS[type].w;
-        // Check bounds
-        if (x + width > CONFIG.GRID_W) return false;
+        if (x + width > CONFIG.GRID_W) return false; // Check bounds
+
+        // Underground checks
+        const isUnderground = y > CONFIG.LOBBY_FLOOR;
+        if (type === TYPES.PARKING && !isUnderground) {
+            console.log("Parking must be underground.");
+            return false;
+        }
+        if ((type === TYPES.OFFICE || type === TYPES.CONDO) && isUnderground) {
+            console.log("Offices and Condos need sunlight.");
+            return false;
+        }
         
-        // Check if all needed cells are empty (or Lobby overrides)
+        // Check if all needed cells are empty
         const isTransport = type === TYPES.ELEVATOR || type === TYPES.STAIRS;
-        
         for (let i = 0; i < width; i++) {
             const cell = this.getCell(x + i, y);
-            const isLobby = cell.type === TYPES.LOBBY;
-            
-            if (cell.type !== TYPES.EMPTY && !(isLobby && isTransport)) {
+            if (!cell || (cell.type !== TYPES.EMPTY && !(cell.type === TYPES.LOBBY && isTransport))) {
                 return false;
             }
         }
@@ -94,20 +101,18 @@ export class GridManager {
         return true;
     }
 
-    makeRandomDirty() {
-        // ... (Logic mostly same, simplified for anchor check)
-        // Only target anchors to avoid double dirt
-        for(let i=0; i<10; i++) {
-            const rx = Math.floor(Math.random() * CONFIG.GRID_W);
-            const ry = Math.floor(Math.random() * CONFIG.GRID_H);
-            const c = this.grid[ry][rx];
-            if (c.isAnchor && (c.type === TYPES.OFFICE || c.type === TYPES.HOTEL || c.type === TYPES.FOOD)) {
-                c.dirt = Math.min((c.dirt || 0) + 20, 100);
-                this.dirty = true;
-                return true;
+    updateDirt() {
+        for (let y = 0; y < CONFIG.GRID_H; y++) {
+            for (let x = 0; x < CONFIG.GRID_W; x++) {
+                const cell = this.grid[y][x];
+                if (cell.isAnchor && (cell.type === TYPES.OFFICE || cell.type === TYPES.HOTEL || cell.type === TYPES.FOOD)) {
+                    cell.dirt = Math.min(cell.dirt + 0.05, 100);
+                    if (cell.dirt > 50) {
+                        this.dirty = true;
+                    }
+                }
             }
         }
-        return false;
     }
 
     cleanRoom(x, y) {
@@ -125,6 +130,34 @@ export class GridManager {
             return true;
         }
         return false;
+    }
+
+    updateStress() {
+        for (let y = 0; y < CONFIG.GRID_H; y++) {
+            for (let x = 0; x < CONFIG.GRID_W; x++) {
+                const cell = this.grid[y][x];
+                if (cell.isAnchor && (cell.type === TYPES.CONDO || cell.type === TYPES.HOTEL)) {
+                    let stress = 0;
+                    // Check neighbors for noisy things
+                    for (let dx = -1; dx <= 1; dx++) {
+                        for (let dy = -1; dy <= 1; dy++) {
+                            if (dx === 0 && dy === 0) continue;
+                            const neighbor = this.getCell(x + dx, y + dy);
+                            if (neighbor && (neighbor.type === TYPES.ELEVATOR || neighbor.type === TYPES.FOOD)) {
+                                stress++;
+                            }
+                        }
+                    }
+                    if (cell.dirt > 50) stress++;
+
+                    if (stress > 0) {
+                        cell.stress = Math.min(cell.stress + stress, 100);
+                    } else {
+                        cell.stress = Math.max(cell.stress - 0.5, 0);
+                    }
+                }
+            }
+        }
     }
 
     checkConnectivity() {
@@ -177,13 +210,13 @@ export class GridManager {
         }
     }
 
-    draw(ctx, isNight) {
+    draw(ctx, isNight, engine) {
         if (this.dirty) this.redrawBackground();
         ctx.drawImage(this.bgCanvas, 0, 0);
-        this.drawOverlays(ctx, isNight);
+        this.drawOverlays(ctx, isNight, engine);
     }
 
-    drawOverlays(ctx, isNight) {
+    drawOverlays(ctx, isNight, engine) {
         const cs = CONFIG.CELL_SIZE;
         for (let y = 0; y < CONFIG.GRID_H; y++) {
             for (let x = 0; x < CONFIG.GRID_W; x++) {
@@ -195,10 +228,10 @@ export class GridManager {
                 const w = cell.width * cs;
 
                 // Night Lights
-                if (isNight && (cell.type === TYPES.OFFICE || cell.type === TYPES.HOTEL || cell.type === TYPES.CONDO)) {
-                    if ((x + y + Date.now()/1000) % 10 > 3) { 
-                        ctx.fillStyle = 'rgba(255, 235, 59, 0.3)';
-                        ctx.fillRect(px + 4, py + 4, w - 8, cs - 8);
+                if (isNight && engine.time / 60 >= 20 && (cell.type === TYPES.OFFICE || cell.type === TYPES.HOTEL || cell.type === TYPES.CONDO)) {
+                    if (Math.random() > 0.5) {
+                        ctx.fillStyle = 'rgba(255, 235, 59, 0.7)';
+                        ctx.fillRect(px + 6, py + 6, w - 12, cs - 12);
                     }
                 }
 
@@ -257,37 +290,58 @@ export class GridManager {
         ctx.fillRect(px, py, width, cs);
 
         // 2. Interiors (Procedural Detail)
+        if (cell.type === TYPES.LOBBY) {
+            // Marble Columns
+            for (let i = 0; i < 5; i++) {
+                if ((x + i) % 4 === 0) {
+                    ctx.fillStyle = '#E0E0E0';
+                    ctx.fillRect(px + i * cs + cs / 2 - 2, py, 4, cs);
+                    ctx.fillStyle = '#BDBDBD';
+                    ctx.fillRect(px + i * cs + cs / 2 - 2, py, 2, cs);
+                }
+            }
+            // Reception Desk
+            if (x === 0) { // Assuming desk is at the start of the lobby
+                ctx.fillStyle = '#8D6E63';
+                ctx.fillRect(px + 10, py + 16, 30, 6);
+            }
+        }
         
-        // OFFICE (2 Wide): [ Desk area ] [ Meeting area ]
+        // OFFICE (2 Wide)
         if(cell.type === TYPES.OFFICE) {
-            // Divider
-            ctx.fillStyle = '#90A4AE'; ctx.fillRect(px + width/2, py+4, 2, cs-4);
-            // Desk 1
-            ctx.fillStyle = '#795548'; ctx.fillRect(px+4, py+14, 12, 6);
-            ctx.fillStyle = '#FFF'; ctx.fillRect(px+6, py+12, 4, 3); // Paper
-            // Desk 2
-            ctx.fillStyle = '#795548'; ctx.fillRect(px+width/2+4, py+14, 12, 6);
+            // Desk
+            ctx.fillStyle = '#8D6E63';
+            ctx.fillRect(px + 5, py + 15, 14, 5);
+            // Chair
+            ctx.fillStyle = '#3E2723';
+            ctx.fillRect(px + 8, py + 12, 8, 3);
+            // Monitor
+            ctx.fillStyle = '#212121';
+            ctx.fillRect(px + 7, py + 8, 10, 6);
         }
 
-        // CONDO (4 Wide): [ Bed ] [ Bath ] [ Living ] [ Kitchen ]
+        // CONDO (4 Wide): [Bedroom], [Living Room], [Kitchen]
         if(cell.type === TYPES.CONDO) {
-            // Walls
-            ctx.fillStyle = '#BCAAA4'; 
-            ctx.fillRect(px + cs, py, 2, cs);
-            ctx.fillRect(px + cs*3, py, 2, cs);
+            // Bedroom
+            ctx.fillStyle = '#BCAAA4'; // Bed frame
+            ctx.fillRect(px + 4, py + 14, 16, 6);
+            ctx.fillStyle = '#FFFFFF'; // Pillow
+            ctx.fillRect(px + 5, py + 15, 4, 4);
             
-            // Bed
-            ctx.fillStyle = '#5D4037'; ctx.fillRect(px+4, py+12, 14, 8);
-            ctx.fillStyle = '#FFF'; ctx.fillRect(px+4, py+13, 4, 6);
+            // Living Room
+            ctx.fillStyle = '#795548'; // TV Stand
+            ctx.fillRect(px + cs + 8, py + 18, 12, 4);
+            ctx.fillStyle = '#000000'; // TV
+            ctx.fillRect(px + cs + 9, py + 12, 10, 6);
+            ctx.fillStyle = '#C5E1A5'; // Rug
+            ctx.fillRect(px + cs * 2 - 10, py + 20, 18, 4);
             
-            // TV
-            ctx.fillStyle = '#000'; ctx.fillRect(px + cs*2 + 4, py+8, 12, 8);
-            
-            // Kitchen Counter
-            ctx.fillStyle = '#EEE'; ctx.fillRect(px + cs*3 + 2, py+14, 18, 8);
+            // Kitchen
+            ctx.fillStyle = '#CFD8DC'; // Counter
+            ctx.fillRect(px + cs * 3 + 2, py + 16, 20, 6);
         }
 
-        // HOTEL (2 Wide): [ Bath ] [ Bed ]
+        // HOTEL (2 Wide)
         if(cell.type === TYPES.HOTEL) {
             ctx.fillStyle = '#BA68C8'; ctx.fillRect(px + cs + 4, py+12, 14, 8); // Bed
             ctx.fillStyle = '#FFF'; ctx.fillRect(px + cs + 4, py+13, 4, 6); // Pillow

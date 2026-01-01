@@ -6,35 +6,33 @@
     <title>Modular SimTower</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #111; color: #eee; overflow: hidden; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a1a; color: #f0f0f0; overflow: hidden; }
         #gameContainer { display: flex; height: 100vh; }
-        #canvasContainer { flex: 1; position: relative; overflow: hidden; background: #000; }
-        #gameCanvas { display: block; image-rendering: pixelated; }
+        #canvasContainer { flex: 1; background: #000; }
+        #gameCanvas { display: block; image-rendering: pixelated; cursor: crosshair; }
         
-        #sidebar { width: 300px; background: #1e1e24; padding: 20px; display: flex; flex-direction: column; border-left: 1px solid #333; }
+        #sidebar { width: 280px; background: #252525; padding: 15px; display: flex; flex-direction: column; border-left: 1px solid #444; }
         
-        #hud { background: #2b2b36; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #444; }
-        .hud-item { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; color: #aaa; }
-        .hud-value { font-size: 18px; font-weight: 700; color: #fff; font-family: monospace; }
-        #money { color: #4caf50; }
-        #rating { color: #ffc107; }
+        #hud { background: #333; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #555; }
+        .hud-item { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; color: #ccc; }
+        .hud-value { font-size: 18px; font-weight: 700; color: #fff; font-family: 'Lucida Console', monospace; }
+        #money { color: #81C784; }
+        #rating { color: #FFD54F; }
 
         #controls { overflow-y: auto; flex: 1; }
         .btn { 
-            width: 100%; padding: 14px; margin: 6px 0; border: none; border-radius: 6px; 
-            cursor: pointer; color: #fff; text-align: left; font-weight: 600; font-size: 13px;
-            background: #373740; border-left: 4px solid transparent; transition: all 0.2s;
+            width: 100%; padding: 12px 15px; margin-bottom: 8px; border: 1px solid transparent; border-radius: 6px;
+            cursor: pointer; color: #e0e0e0; text-align: left; font-weight: 600; font-size: 13px;
+            background: #4a4a4a; transition: all 0.2s;
         }
-        .btn:hover { background: #454550; transform: translateX(2px); }
-        .btn.active { background: #505060; border-left-color: #fff; }
+        .btn:hover { background: #5a5a5a; border-color: #777; }
+        .btn.active { background: #03A9F4; color: #fff; border-color: #03A9F4; }
         
-        .btn-office { border-left-color: #2196F3; } .btn-condo { border-left-color: #4CAF50; }
-        .btn-hotel { border-left-color: #9C27B0; } .btn-food { border-left-color: #FF9800; }
-        .btn-parking { border-left-color: #607D8B; } .btn-stairs { border-left-color: #795548; }
-        .btn-elevator { border-left-color: #999; } .btn-clean { border-left-color: #00bcd4; background: #263238; margin-top: 10px; }
-        .btn-demolish { border-left-color: #f44336; margin-top: 20px; background: #3a2020; }
+        .btn-clean, .btn-demolish, .btn-speed { margin-top: 15px; background: #3c3c3c; border: 1px solid #666; }
+        .btn-clean.active { background: #00BCD4; border-color: #00BCD4;}
+        .btn-demolish.active { background: #f44336; border-color: #f44336; }
         
-        #message { position: fixed; top: 40px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.85); color: white; padding: 10px 30px; border-radius: 50px; display: none; font-weight: bold; border: 1px solid #555; z-index: 100; }
+        #message { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #222; color: white; padding: 12px 25px; border-radius: 6px; display: none; font-weight: bold; border: 1px solid #555; z-index: 100; box-shadow: 0 4px 15px rgba(0,0,0,0.4); }
     </style>
 </head>
 <body>
@@ -89,47 +87,48 @@
         window.toggleSpeed = () => { document.getElementById('speedLabel').innerText = engine.setSpeed() + 'x'; };
         function showMessage(msg) { const el = document.getElementById('message'); el.innerText = msg; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 3000); }
 
-        function updateLogic() {
+        function collectOfficeIncome() {
+            let total = 0;
             for (let y = 0; y < CONFIG.GRID_H; y++) {
                 for (let x = 0; x < CONFIG.GRID_W; x++) {
-                    const cell = gridMgr.getCell(x, y);
-                    if (cell.isAnchor && (cell.type === TYPES.CONDO || cell.type === TYPES.HOTEL)) {
-                        let stress = 0;
-                        if (x>0 && gridMgr.getCell(x-1,y).type === TYPES.ELEVATOR) stress += 1;
-                        if (cell.dirt > 50) stress += 1;
-                        cell.stress = Math.min(cell.stress + stress, 100);
-                        if (stress === 0 && cell.stress > 0) cell.stress -= 0.1;
+                    const c = gridMgr.grid[y][x];
+                    if (c.isAnchor && c.connected && c.type === TYPES.OFFICE && c.stress < 80 && c.dirt < 80) {
+                        total += CONFIG.OFFICE_RENT;
                     }
                 }
             }
+            engine.money += total;
+            if (total > 0) showMessage(`Office Rent: $${total.toLocaleString()}`);
         }
 
-        function collectIncome() {
+        function collectHotelIncome() {
             let total = 0;
-            let pop = simMgr.people.length;
-            const isNight = engine.isNight();
+            for (let y = 0; y < CONFIG.GRID_H; y++) {
+                for (let x = 0; x < CONFIG.GRID_W; x++) {
+                    const c = gridMgr.grid[y][x];
+                    if (c.isAnchor && c.connected && c.type === TYPES.HOTEL && c.stress < 80 && c.dirt < 80) {
+                        total += CONFIG.HOTEL_RENT * Math.min(c.occupants.length, 3);
+                    }
+                }
+            }
+            engine.money += total;
+            if (total > 0) showMessage(`Hotel Fees: $${total.toLocaleString()}`);
+        }
 
+        function collectOtherIncome() {
+            let total = 0;
             for (let y = 0; y < CONFIG.GRID_H; y++) {
                 for (let x = 0; x < CONFIG.GRID_W; x++) {
                     const c = gridMgr.grid[y][x];
                     if (!c.isAnchor || !c.connected) continue;
-                    
                     if (c.stress > 80 || c.dirt > 80) continue;
 
-                    if (!isNight && c.type === TYPES.OFFICE) total += CONFIG.OFFICE_RENT;
-                    if (isNight && c.type === TYPES.HOTEL) total += CONFIG.HOTEL_RENT * Math.min(c.occupants.length, 3);
                     if (c.type === TYPES.FOOD) total += CONFIG.FOOD_INCOME_PER * c.occupants.length;
                     if (c.type === TYPES.PARKING) total += CONFIG.PARKING_INCOME;
-                    
-                    pop += c.occupants.length;
                 }
             }
             engine.money += total;
-            if (total > 0) showMessage(`Income: $${total.toLocaleString()}`);
-            
-            let stars = 1;
-            if (pop > 50) stars = 2; if (pop > 150) stars = 3; if (pop > 300) stars = 4; if (pop > 500) stars = 5;
-            engine.rating = stars;
+            if (total > 0) showMessage(`Daily Income: $${total.toLocaleString()}`);
         }
 
         canvas.addEventListener('click', e => {
@@ -161,11 +160,6 @@
             const props = ROOM_PROPS[type];
             if (!props) return;
 
-            // Check Underground Restrictions
-            const isUnderground = y > CONFIG.LOBBY_FLOOR;
-            if (type === TYPES.PARKING && !isUnderground) { showMessage("Underground Only!"); return; }
-            if ((type === TYPES.OFFICE || type === TYPES.CONDO) && isUnderground) { showMessage("Needs Sunlight!"); return; }
-
             if (engine.money >= props.cost) {
                 if (gridMgr.build(x, y, type)) {
                     engine.money -= props.cost;
@@ -179,30 +173,50 @@
         });
 
         let lastTime = 0;
+        let collectedOffice = false;
+        let collectedHotel = false;
+
         function loop(ts) {
             const dt = ts - lastTime || 16;
             lastTime = ts;
             const newDay = engine.update(dt);
-            if (newDay) collectIncome();
-            if (Math.random() < 0.02) gridMgr.makeRandomDirty();
+
+            if (newDay) {
+                collectOtherIncome();
+                collectedOffice = false;
+                collectedHotel = false;
+            }
+
+            if (engine.time >= 17 * 60 && !collectedOffice) {
+                collectOfficeIncome();
+                collectedOffice = true;
+            }
+            if (engine.time >= 6 * 60 && !collectedHotel) {
+                collectHotelIncome();
+                collectedHotel = true;
+            }
             
-            updateLogic(); 
+            gridMgr.updateDirt();
+            gridMgr.updateStress();
             
             simMgr.update(dt, engine.speed, gridMgr.grid, sysMgr.elevators, engine.time);
             sysMgr.update(simMgr.people);
 
             ctx.clearRect(0,0, canvas.width, canvas.height);
             const isNight = engine.isNight();
-            gridMgr.draw(ctx, isNight);
+            gridMgr.draw(ctx, isNight, engine);
             sysMgr.draw(ctx);
             simMgr.draw(ctx);
             
             if (isNight) { ctx.fillStyle = 'rgba(0,0,30,0.3)'; ctx.fillRect(0,0,canvas.width, canvas.height); }
 
+            let totalPop = simMgr.getTotalPopulation(gridMgr.grid);
+            engine.updateRating(totalPop);
+
             document.getElementById('money').innerText = `$${Math.floor(engine.money).toLocaleString()}`;
             document.getElementById('time').innerText = engine.getFormattedTime();
             document.getElementById('day').innerText = engine.day;
-            document.getElementById('population').innerText = simMgr.people.length;
+            document.getElementById('population').innerText = totalPop;
             document.getElementById('rating').innerText = '★'.repeat(engine.rating);
             requestAnimationFrame(loop);
         }

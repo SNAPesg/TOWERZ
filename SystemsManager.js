@@ -21,41 +21,55 @@ class ElevatorCar {
     update(peopleList) {
         if (this.doorTimer > 0) {
             this.doorTimer--;
-            this.doorsOpen = this.doorTimer > 10;
+            if (this.doorTimer === 0) {
+                this.doorsOpen = false;
+            }
             return;
         }
 
-        let next = null;
-        if (this.direction < 0 || (this.direction === 0 && this.upRequests.size > 0)) {
-            const candidates = [...this.upRequests].filter(f => f < this.y); 
-            if (candidates.length > 0) next = Math.min(...candidates); 
-        }
-        if (next === null && (this.direction > 0 || (this.direction === 0 && this.downRequests.size > 0))) {
-            const candidates = [...this.downRequests].filter(f => f > this.y);
-            if (candidates.length > 0) next = Math.max(...candidates);
-        }
-        if (next === null) {
-            const all = [...this.upRequests, ...this.downRequests];
-            if (all.length > 0) next = all.reduce((prev, curr) => Math.abs(curr - this.y) < Math.abs(prev - this.y) ? curr : prev);
+        if (this.doorsOpen) {
+            this.handlePassengers(peopleList);
         }
 
-        if (next !== null) this.targetY = next;
+        // Determine next target
+        if (this.direction === 1) { // Going up
+            const nextUp = [...this.upRequests].filter(f => f > this.y).sort((a,b)=>a-b)[0];
+            if (nextUp) {
+                this.targetY = nextUp;
+            } else {
+                this.direction = -1; // Switch direction
+            }
+        }
 
+        if (this.direction === -1) { // Going down
+            const nextDown = [...this.downRequests].filter(f => f < this.y).sort((a,b)=>b-a)[0];
+            if (nextDown) {
+                this.targetY = nextDown;
+            } else {
+                this.direction = 1; // Switch direction
+            }
+        }
+
+        if (this.direction === 0) { // Idle
+             if (this.upRequests.size > 0) {
+                 this.direction = 1;
+             } else if (this.downRequests.size > 0) {
+                 this.direction = -1;
+             }
+        }
+
+        // Move towards target
         const diff = this.targetY - this.y;
         if (Math.abs(diff) > 0.1) {
-            this.y += Math.sign(diff) * 0.15; 
-            this.direction = Math.sign(diff); 
-        } else if (next !== null) {
-            this.y = next;
+            this.y += Math.sign(diff) * 0.2;
+        } else if (this.targetY !== this.y) {
+            this.y = this.targetY;
             this.doorsOpen = true;
-            this.doorTimer = 40;
-            this.direction = 0; 
-            this.upRequests.delete(next);
-            this.downRequests.delete(next);
+            this.doorTimer = 50;
+            this.upRequests.delete(this.y);
+            this.downRequests.delete(this.y);
             beep(800, 50, 'sine');
         }
-
-        if (this.doorsOpen) this.handlePassengers(peopleList);
     }
 
     handlePassengers(peopleList) {
